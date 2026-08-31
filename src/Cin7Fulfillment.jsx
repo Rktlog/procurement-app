@@ -74,14 +74,26 @@ const DIM_PRESETS = {
 // value that starts with =, +, -, or @ (Excel/Sheets would otherwise try
 // to evaluate it -- a real risk here since customer names/addresses come
 // from DEAR sale data, not from us).
-function csvSafe(val) {
+function csvSafe(val, isPhoneField = false) {
   let s = val === undefined || val === null ? '' : String(val);
 
   // Neutralise formula injection first -- a leading =, +, -, or @ would
   // otherwise be evaluated as a formula by Excel/Sheets. This alone
   // doesn't require quoting under CSV rules, so it's separate from the
   // quoting decision below.
-  if (/^[=+\-@]/.test(s)) s = "'" + s;
+  //
+  // Skipped for phone number fields specifically: an international AU
+  // number starts with "+61", which triggered this guard and wrote a
+  // literal apostrophe character into the actual phone number data
+  // ('+61412345678) -- not a hidden Excel-only marker, a real character
+  // sitting in the field. AusPost's importer is not Excel and doesn't
+  // strip that apostrophe the way Excel would when opening the file;
+  // we already found once tonight that it parses differently from
+  // Excel (the earlier blanket-quoting issue). A phone number is data,
+  // not something a person opens as a spreadsheet formula, so the
+  // formula-injection risk this guard protects against doesn't apply
+  // here, and skipping it avoids corrupting every "+"-prefixed number.
+  if (!isPhoneField && /^[=+\-@]/.test(s)) s = "'" + s;
 
   // Quote only when actually necessary (contains a comma, a quote
   // character, or a newline) -- matching AusPost's own official
@@ -444,7 +456,9 @@ export default function Cin7Fulfillment() {
       // Using `in` rather than `|| ''` so a real 0 (e.g. Weight) isn't
       // swapped for an empty string, which `||` would do since 0 is falsy.
       rows.push(
-        AUSPOST_CSV_COLUMNS.map((col) => csvSafe(col in rowMap ? rowMap[col] : '')).join(',')
+        AUSPOST_CSV_COLUMNS.map((col) =>
+          csvSafe(col in rowMap ? rowMap[col] : '', col === 'Recipient phone number')
+        ).join(',')
       );
     });
 
@@ -520,7 +534,9 @@ export default function Cin7Fulfillment() {
       };
 
       rows.push(
-        AUSPOST_INTL_COLUMNS.map((col) => csvSafe(col in rowMap ? rowMap[col] : '')).join(',')
+        AUSPOST_INTL_COLUMNS.map((col) =>
+          csvSafe(col in rowMap ? rowMap[col] : '', col === 'Recipient phone number')
+        ).join(',')
       );
     });
 
