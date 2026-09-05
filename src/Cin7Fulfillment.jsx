@@ -547,6 +547,39 @@ export default function Cin7Fulfillment() {
     link.click();
   };
 
+  // Quote-aware CSV line splitter -- respects commas inside quoted
+  // fields instead of naively splitting on every comma. Confirmed real
+  // failure: a genuine AusPost export row had an address field like
+  // "15b, Warehouse 1, 175 Lower Gibbes St," (one quoted value with
+  // three embedded commas). Splitting that naively broke it into four
+  // separate columns, shifting every column after it out of position
+  // for that row -- which is exactly why Order # and Tracking # showed
+  // garbage like "NSW", "AU", "3J55" (fragments of address/state/
+  // service-code fields that had shifted into the wrong position).
+  const parseCsvLine = (line) => {
+    const cells = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"'; // escaped quote inside a quoted field
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    cells.push(current.trim());
+    return cells;
+  };
+
   const handleResultsCsvUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -556,14 +589,14 @@ export default function Cin7Fulfillment() {
       const lines = evt.target.result.split('\n').filter((l) => l.trim().length > 0);
       if (lines.length < 2) return setMsg({ type: 'error', text: 'No data rows found in uploaded CSV.' });
 
-      const headers = lines[0].split(',').map((h) => h.trim().replace(/"/g, ''));
+      const headers = parseCsvLine(lines[0]);
       const refIdx = headers.findIndex((h) => h.toLowerCase().includes('sender reference') || h.toLowerCase().includes('reference'));
       const trackingIdx = headers.findIndex((h) => h.toLowerCase().includes('connote') || h.toLowerCase().includes('tracking number') || h.toLowerCase().includes('article id'));
       const urlIdx = headers.findIndex((h) => h.toLowerCase().includes('tracking url'));
 
       const parsed = [];
       for (let i = 1; i < lines.length; i++) {
-        const row = lines[i].split(',').map((c) => c.trim().replace(/"/g, ''));
+        const row = parseCsvLine(lines[i]);
         const ref = row[refIdx];
         const tracking = row[trackingIdx];
         const url = urlIdx !== -1 && row[urlIdx] ? row[urlIdx] : `https://auspost.com.au/mypost/track/#/details/${tracking}`;
@@ -588,14 +621,19 @@ export default function Cin7Fulfillment() {
         }
       }
 
-      setImportResults(parsed);
-      const matchedCount = parsed.filter((p) => p.matched).length;
-      const unmatchedCount = parsed.length - matchedCount;
+      // Only keep rows that actually matched something in Tab 2's
+      // current queue -- a bulk historical export (like a "past
+      // shipments" report) can have hundreds of old, unrelated rows
+      // that have nothing to do with what's queued right now. Showing
+      // every row from a 1000-row file made the genuinely relevant
+      // handful hard to find in the noise.
+      const allParsedCount = parsed.length;
+      const matchedOnly = parsed.filter((p) => p.matched);
+
+      setImportResults(matchedOnly);
       setMsg({
-        type: unmatchedCount > 0 ? 'error' : 'success',
-        text: unmatchedCount > 0
-          ? `${matchedCount} of ${parsed.length} rows matched a queued order. ${unmatchedCount} row(s) below did not match anything in Tab 2 -- check for a typo in the order number, or an order already removed from the batch.`
-          : `All ${parsed.length} rows matched a queued order. Ready to fulfil.`,
+        type: 'success',
+        text: `${matchedOnly.length} of ${allParsedCount} rows in this file matched an order currently in Tab 2's batch -- only those are shown below.`,
       });
     };
     reader.readAsText(file);
