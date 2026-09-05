@@ -568,26 +568,58 @@ export default function Cin7Fulfillment() {
         const tracking = row[trackingIdx];
         const url = urlIdx !== -1 && row[urlIdx] ? row[urlIdx] : `https://auspost.com.au/mypost/track/#/details/${tracking}`;
 
-        if (ref && tracking) parsed.push({ ref, tracking, url });
+        if (ref && tracking) {
+          // Match against Tab 2's queue immediately, at upload time --
+          // not deferred until execution, where a mismatch used to only
+          // surface after the fact, mixed in with genuine API errors.
+          // Showing this upfront lets a typo'd order number or an
+          // already-removed queue entry get caught and fixed before
+          // anything is actually sent to Cin7.
+          const queueMatch = csvQueue.find(
+            (q) => q.order_data.OrderNumber === ref || q.order_data.orderName === ref
+          );
+          parsed.push({
+            ref,
+            tracking,
+            url,
+            matched: !!queueMatch,
+            matchedCustomer: queueMatch ? (queueMatch.order_data.Customer || queueMatch.order_data.customer || '') : null,
+          });
+        }
       }
 
       setImportResults(parsed);
-      setMsg({ type: 'success', text: `Extracted tracking numbers for ${parsed.length} Pantone orders.` });
+      const matchedCount = parsed.filter((p) => p.matched).length;
+      const unmatchedCount = parsed.length - matchedCount;
+      setMsg({
+        type: unmatchedCount > 0 ? 'error' : 'success',
+        text: unmatchedCount > 0
+          ? `${matchedCount} of ${parsed.length} rows matched a queued order. ${unmatchedCount} row(s) below did not match anything in Tab 2 -- check for a typo in the order number, or an order already removed from the batch.`
+          : `All ${parsed.length} rows matched a queued order. Ready to fulfil.`,
+      });
     };
     reader.readAsText(file);
   };
 
   const handleExecuteCin7Fulfillment = async () => {
-    if (importResults.length === 0) return;
+    // Only ever process rows already confirmed matched above -- an
+    // unmatched row has nothing valid to fulfil against, so silently
+    // attempting it (the old behaviour) only produced a confusing
+    // failure message after the fact instead of being excluded upfront.
+    const matchedResults = importResults.filter((item) => item.matched);
+    if (matchedResults.length === 0) return;
 
     setImporting(true);
     let successCount = 0;
     const completedRefs = [];
     const failed = [];
 
-    for (const item of importResults) {
+    for (const item of matchedResults) {
       const queueMatch = csvQueue.find((q) => q.order_data.OrderNumber === item.ref || q.order_data.orderName === item.ref);
       if (!queueMatch) {
+        // Queue may have changed between upload and execute (e.g.
+        // someone else cleared the batch) -- re-check rather than
+        // trust the upload-time match blindly this far downstream.
         failed.push(`${item.ref} (no matching queued order)`);
         continue;
       }
@@ -1086,10 +1118,51 @@ export default function Cin7Fulfillment() {
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-4">
           <label className="block text-xs font-bold text-slate-700">Upload Australia Post / Courier Result CSV File</label>
           <input type="file" accept=".csv" onChange={handleResultsCsvUpload} className="block w-full text-xs text-slate-500" />
+
           {importResults.length > 0 && (
-            <button onClick={handleExecuteCin7Fulfillment} disabled={importing} className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2 px-4 rounded-lg h-9 cursor-pointer">
-              {importing ? 'Fulfilling in Cin7...' : `✅ Fulfill ${importResults.length} Orders in Cin7`}
-            </button>
+            <>
+              {/* Match preview -- shows every parsed row against Tab 2's
+                  queue BEFORE anything gets sent to Cin7, instead of only
+                  discovering a mismatch after attempting fulfilment. */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-slate-50 border-b">
+                    <tr>
+                      <th className="p-2">Order #</th>
+                      <th className="p-2">Tracking #</th>
+                      <th className="p-2">Match Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {importResults.map((item, idx) => (
+                      <tr key={idx} className={item.matched ? '' : 'bg-red-50'}>
+                        <td className="p-2 font-bold">{item.ref}</td>
+                        <td className="p-2 font-mono">{item.tracking}</td>
+                        <td className="p-2">
+                          {item.matched ? (
+                            <span className="text-emerald-700 font-bold">
+                              ✅ Matched{item.matchedCustomer ? ` — ${item.matchedCustomer}` : ''}
+                            </span>
+                          ) : (
+                            <span className="text-red-600 font-bold">❌ No matching order in Tab 2</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <button
+                onClick={handleExecuteCin7Fulfillment}
+                disabled={importing || importResults.every((i) => !i.matched)}
+                className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2 px-4 rounded-lg h-9 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {importing
+                  ? 'Fulfilling in Cin7...'
+                  : `✅ Fulfill ${importResults.filter((i) => i.matched).length} Matched Order${importResults.filter((i) => i.matched).length === 1 ? '' : 's'} in Cin7`}
+              </button>
+            </>
           )}
         </div>
       )}
