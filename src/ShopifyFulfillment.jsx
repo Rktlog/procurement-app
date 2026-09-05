@@ -153,6 +153,14 @@ export default function ShopifyFulfillment() {
         const { data: newOrder, error: insertError } = await supabase
           .from('orders')
           .insert({
+            // external_id is NOT NULL with no default -- confirmed via
+            // error_logs that every single order sync has been failing
+            // on this exact constraint (zero rows in the whole table
+            // have ever had it populated). Using the same value as
+            // shopify_id: it's the natural unique identifier this
+            // column is almost certainly meant to hold, and no other
+            // convention exists yet to conflict with.
+            external_id: shopifyId,
             shopify_id: shopifyId,
             order_number: orderDict['Order Name'] || 'N/A',
             customer: orderDict.Customer || '',
@@ -222,6 +230,13 @@ export default function ShopifyFulfillment() {
   // refreshes every 3 hours, so an order fulfilled between refreshes
   // (or one that failed to write during a previous saveOrderToDb call)
   // has nothing to match against here.
+  //
+  // Returns true/false now (previously nothing) -- every caller used to
+  // await this without ever checking the result, so it could fail
+  // silently (only visible in error_logs) while the calling code still
+  // showed "Order fulfilled!" regardless of whether this local logging
+  // actually succeeded. Shopify itself genuinely completed the order in
+  // that case -- only the Completed Orders entry was ever missing.
   const saveShipmentToDb = async (orderNumber, shipmentId, tracking, service, label, manifest, dispatchedItems, orderContext) => {
     try {
       let { data: order } = await supabase
@@ -234,6 +249,11 @@ export default function ShopifyFulfillment() {
         const { data: created, error: createErr } = await supabase
           .from('orders')
           .insert({
+            // Same fix as saveOrderToDb's insert above -- external_id
+            // is NOT NULL with no default, and this fallback path was
+            // the one that first surfaced the constraint violation in
+            // error_logs.
+            external_id: orderContext.saleId || null,
             shopify_id: orderContext.saleId || null,
             order_number: orderNumber,
             customer: orderContext.customer || '',
@@ -249,17 +269,24 @@ export default function ShopifyFulfillment() {
 
         if (createErr) {
           await logError('saveShipmentToDb', `Could not create missing order row for order_number=${orderNumber}: ${createErr.message}`);
-          return;
+          return false;
         }
         order = created;
       }
 
       if (!order) {
         await logError('saveShipmentToDb', `No matching order found for order_number=${orderNumber} and no order context was available to create one.`);
-        return;
+        return false;
       }
 
-      await supabase.from('shipments').insert({
+      // shipped_date was missing from this insert entirely, despite
+      // fetchCompletedHistory sorting by it and Tab 4 displaying it --
+      // if that column is NOT NULL with no default, every single insert
+      // here would fail on a constraint violation, get caught below,
+      // logged only to error_logs, and never surface to the user. This
+      // is very likely the direct cause of "order completes but never
+      // shows in Completed Orders."
+      const { error: shipmentInsertErr } = await supabase.from('shipments').insert({
         order_id: order.id,
         shipment_id: shipmentId || '',
         tracking_number: tracking,
@@ -267,7 +294,13 @@ export default function ShopifyFulfillment() {
         label_path: label || '',
         manifest_id: manifest || '',
         source: 'shopify',
+        shipped_date: new Date().toISOString(),
       });
+
+      if (shipmentInsertErr) {
+        await logError('saveShipmentToDb', `shipments insert failed for order_number=${orderNumber}: ${shipmentInsertErr.message}`);
+        return false;
+      }
 
       for (const shipped of dispatchedItems) {
         const foId = shipped.fo_line_item_id;
@@ -316,8 +349,11 @@ export default function ShopifyFulfillment() {
 
       const newStatus = completed ? 'SHIPPED' : partial ? 'PARTIALLY_SHIPPED' : 'OPEN';
       await supabase.from('orders').update({ status: newStatus }).eq('id', order.id);
+
+      return true;
     } catch (err) {
       await logError('saveShipmentToDb', err.message);
+      return false;
     }
   };
 
@@ -600,7 +636,13 @@ export default function ShopifyFulfillment() {
       if (error) throw error;
       if (!data.success) throw new Error(data.error);
 
-      await saveShipmentToDb(
+      // Check the actual local-logging result now, instead of trusting
+      // it blindly -- Shopify's own fulfillment already succeeded by
+      // this point (the throw above would have caught a Shopify-side
+      // failure), so a false here means specifically "shipped fine, but
+      // won't show in Completed Orders" -- worth telling the person
+      // directly rather than showing an unqualified success either way.
+      const loggedLocally = await saveShipmentToDb(
         order.orderName,
         '',
         trackingNo.trim(),
@@ -615,7 +657,14 @@ export default function ShopifyFulfillment() {
       setOrders(remainingOrders);
       await saveOrdersToCache(remainingOrders);
 
-      setMsg({ type: 'success', text: `Order ${order.orderName} fulfilled!` });
+      if (loggedLocally) {
+        setMsg({ type: 'success', text: `Order ${order.orderName} fulfilled!` });
+      } else {
+        setMsg({
+          type: 'error',
+          text: `Order ${order.orderName} was fulfilled in Shopify, but could not be logged to Completed Orders here. Check error_logs for details -- the order itself is genuinely shipped, this only affects this app's own record of it.`,
+        });
+      }
       setSelectedOrderIds((prev) => prev.filter((id) => id !== saleId));
     } catch (err) {
       await logError('handleFulfillSingleOrderDirect', err.message);
@@ -744,6 +793,7 @@ export default function ShopifyFulfillment() {
     setImporting(true);
     let successCount = 0;
     const completedRefs = [];
+    const loggingFailures = [];
 
     for (const item of importResults) {
       const queueMatch = csvQueue.find((q) => q.order_data.orderName === item.ref);
@@ -761,7 +811,7 @@ export default function ShopifyFulfillment() {
         });
 
         if (!error && data?.success) {
-          await saveShipmentToDb(
+          const loggedLocally = await saveShipmentToDb(
             queueMatch.order_data.orderName,
             '',
             item.tracking,
@@ -774,6 +824,11 @@ export default function ShopifyFulfillment() {
 
           successCount++;
           completedRefs.push(item.ref);
+          // Genuinely fulfilled in Shopify either way -- only note it
+          // here if the local Completed Orders log specifically failed,
+          // rather than silently losing that distinction the way this
+          // used to (loggedLocally was never checked before).
+          if (!loggedLocally) loggingFailures.push(item.ref);
         }
       } catch (e) {
         await logError('handleExecuteShopifyFulfillment', e.message);
@@ -789,7 +844,14 @@ export default function ShopifyFulfillment() {
 
     await fetchCompletedHistory();
 
-    setMsg({ type: 'success', text: `Fulfillment Complete: ${successCount} orders fulfilled in Shopify.` });
+    setMsg({
+      type: loggingFailures.length ? 'error' : 'success',
+      text: `Fulfillment Complete: ${successCount} orders fulfilled in Shopify.${
+        loggingFailures.length
+          ? ` ${loggingFailures.length} of these shipped fine but failed to log to Completed Orders (${loggingFailures.join(', ')}) -- check error_logs.`
+          : ''
+      }`,
+    });
     setImporting(false);
     setImportResults([]);
   };
