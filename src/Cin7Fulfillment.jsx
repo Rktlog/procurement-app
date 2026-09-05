@@ -149,23 +149,23 @@ export default function Cin7Fulfillment() {
   }, [activeTab, csvQueue.length]);
 
   const filterAndSortSales = (rawSales) => {
-    const thirtyDaysAgoMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
-
-    // No pick/pack re-check here -- the edge function already applies
-    // the authoritative check (Fulfilments[].Pick/Pack.Status ===
-    // "AUTHORISED") before anything reaches this cache, so every row
-    // here is already ready. Re-testing a different field client-side
-    // risks silently diverging from that real check again.
-    return rawSales
-      .filter((sale) => {
-        const orderTime = new Date(sale.OrderDate || sale.CreatedDate || 0).getTime();
-        return orderTime >= thirtyDaysAgoMs;
-      })
-      .sort((a, b) => {
-        const timeA = new Date(a.OrderDate || a.CreatedDate || 0).getTime();
-        const timeB = new Date(b.OrderDate || b.CreatedDate || 0).getTime();
-        return timeB - timeA;
-      });
+    // No date filter here anymore -- there used to be a 30-day cutoff
+    // on top of the server-side eligibility check, but that check
+    // (Fulfilments[].Pick/Pack.Status === "AUTHORISED", applied in the
+    // edge function before anything reaches this cache) is already the
+    // authoritative signal for "genuinely ready to ship," not order
+    // age. Confirmed this cutoff was actively hiding real, currently-
+    // actionable orders: a genuinely ready order from months ago (one
+    // that got stuck in the sync backlog the DETAIL_FETCH_CAP fix
+    // above now clears) was invisible here purely because it was
+    // "old," even though DEAR itself still says it's ready to pick/
+    // pack/ship right now. Sorting still puts the most recently
+    // updated orders first; nothing genuinely eligible is hidden.
+    return [...rawSales].sort((a, b) => {
+      const timeA = new Date(a.OrderDate || a.CreatedDate || 0).getTime();
+      const timeB = new Date(b.OrderDate || b.CreatedDate || 0).getTime();
+      return timeB - timeA;
+    });
   };
 
   // Pure DB read. No DEAR call, ever, from this function -- the cache
