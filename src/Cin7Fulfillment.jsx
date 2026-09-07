@@ -179,8 +179,22 @@ export default function Cin7Fulfillment() {
         .eq('id', 'cin7_unfulfilled_cache')
         .maybeSingle();
 
+      // Cross-reference against manually-hidden orders -- a person can
+      // remove an order from view here without touching the sync's own
+      // cache at all. It stays hidden until the sync itself has real
+      // evidence to remove it from the cache entirely (the order
+      // actually ships); if the sync never removes it because it's
+      // genuinely still eligible, it also stays hidden here
+      // indefinitely, since a manual hide is a deliberate choice, not
+      // a temporary snooze.
+      const { data: hiddenRows } = await supabase.from('pantone_hidden_orders').select('order_number');
+      const hiddenOrderNumbers = new Set((hiddenRows || []).map((r) => r.order_number));
+
       if (!error && data) {
-        setSales(filterAndSortSales(data.orders_data || []));
+        const visible = (data.orders_data || []).filter(
+          (s) => !hiddenOrderNumbers.has(s.OrderNumber)
+        );
+        setSales(filterAndSortSales(visible));
       } else if (!error && !data) {
         // First run ever, nothing synced yet -- prompt for a manual sync
         // rather than silently triggering a live DEAR call on page load.
@@ -188,6 +202,23 @@ export default function Cin7Fulfillment() {
       }
     } catch (err) {
       setMsg({ type: 'error', text: `Failed to load cached sales: ${err.message}` });
+    }
+  };
+
+  const handleHideOrder = async (orderNumber) => {
+    if (!window.confirm(`Remove ${orderNumber} from this list? It'll stay hidden until it's actually shipped/removed by the system, or until you re-sync and it's still genuinely eligible with fresh data.`)) return;
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const { error } = await supabase.from('pantone_hidden_orders').upsert({
+        order_number: orderNumber,
+        hidden_at: new Date().toISOString(),
+        hidden_by: userData?.user?.id || null,
+      });
+      if (error) throw error;
+      setSales((prev) => prev.filter((s) => (s.OrderNumber || s.orderName) !== orderNumber));
+      setMsg({ type: 'success', text: `${orderNumber} hidden from this list.` });
+    } catch (err) {
+      setMsg({ type: 'error', text: `Failed to hide order: ${err.message}` });
     }
   };
 
@@ -651,6 +682,7 @@ export default function Cin7Fulfillment() {
     let successCount = 0;
     const completedRefs = [];
     const failed = [];
+    const loggingFailures = [];
 
     for (const item of matchedResults) {
       const queueMatch = csvQueue.find((q) => q.order_data.OrderNumber === item.ref || q.order_data.orderName === item.ref);
@@ -675,15 +707,17 @@ export default function Cin7Fulfillment() {
         });
 
         if (!error && data?.success) {
-          successCount++;
-          completedRefs.push(item.ref);
-
-          // Log the completion so it shows up in the Completed Orders
-          // tab -- nothing previously wrote here, which is why that tab
-          // has always been empty regardless of how many orders were
-          // actually shipped.
+          // Check this insert's actual result now, instead of trusting
+          // it blindly -- the DEAR-side fulfillment already succeeded
+          // by this point, so a failure here specifically means
+          // "genuinely dispatched, but won't show in Completed Orders."
+          // This file has no error_logs mechanism at all (unlike the
+          // Shopify side, which at least wrote there silently) --
+          // meaning a failed insert here left zero trace anywhere,
+          // matching exactly the "dispatched Friday, no record of it"
+          // symptom.
           const { data: userData } = await supabase.auth.getUser();
-          await supabase.from('fulfillment_history').insert({
+          const { error: historyErr } = await supabase.from('fulfillment_history').insert({
             order_name: queueMatch.order_data.OrderNumber || queueMatch.order_data.orderName,
             customer_name: queueMatch.order_data.Customer || queueMatch.order_data.customer || null,
             tracking_number: item.tracking,
@@ -691,6 +725,13 @@ export default function Cin7Fulfillment() {
             shipped_at: new Date().toISOString(),
             created_by: userData?.user?.id || null,
           });
+
+          successCount++;
+          completedRefs.push(item.ref);
+          if (historyErr) {
+            console.error(`Completed Orders log failed for ${item.ref} (order genuinely dispatched):`, historyErr.message);
+            loggingFailures.push(`${item.ref} (${historyErr.message})`);
+          }
         } else {
           failed.push(`${item.ref} (${error?.message || data?.error || 'unknown error'})`);
         }
@@ -710,8 +751,12 @@ export default function Cin7Fulfillment() {
     await fetchCompletedHistory();
 
     setMsg({
-      type: failed.length ? 'error' : 'success',
-      text: `Fulfilled ${successCount} orders.${failed.length ? ` Failed: ${failed.join(', ')}` : ''}`,
+      type: (failed.length || loggingFailures.length) ? 'error' : 'success',
+      text: `Fulfilled ${successCount} orders.${failed.length ? ` Failed: ${failed.join(', ')}` : ''}${
+        loggingFailures.length
+          ? ` ${loggingFailures.length} shipped fine in Cin7 but failed to log to Completed Orders: ${loggingFailures.join(', ')}.`
+          : ''
+      }`,
     });
     setImporting(false);
     setImportResults([]);
@@ -915,6 +960,13 @@ export default function Cin7Fulfillment() {
                       <span className="text-[11px] font-semibold text-slate-400">
                         {sale.OrderDate ? new Date(sale.OrderDate).toLocaleDateString() : ''}
                       </span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleHideOrder(sale.OrderNumber); }}
+                        title="Remove from this list -- stays hidden until it's shipped or genuinely re-confirmed by a sync"
+                        className="text-slate-300 hover:text-red-500 text-sm cursor-pointer px-1"
+                      >
+                        🗑️
+                      </button>
                       <span className="text-slate-400 text-xs font-bold">
                         {isExpanded ? '▲' : '▼'}
                       </span>
