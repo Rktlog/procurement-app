@@ -8,6 +8,7 @@ import UserManagementAdmin from './UserManagementAdmin';
 import Cin7Fulfillment from './Cin7Fulfillment';
 import ShopifyFulfillment from './ShopifyFulfillment';
 import Cin7Procurement from './Cin7Procurement';
+import CreateInvoice from './CreateInvoice';
 
 const APPS_REGISTRY = [
   {
@@ -21,6 +22,12 @@ const APPS_REGISTRY = [
     title: 'Shipping & Logistics',
     description: 'Dispatch manifests, Pantone fulfillment, and Shopify carrier integrations.',
     icon: '🚀',
+  },
+  {
+    id: 'sales',
+    title: 'Sales & Invoicing',
+    description: 'Invoices and quotes built from Shopify draft orders.',
+    icon: '🧾',
   },
 ];
 
@@ -234,6 +241,7 @@ export default function App() {
 
         {activeApp === 'procurement' && <ProcurementAppShell />}
         {activeApp === 'shipping' && <ShippingAppShell />}
+        {activeApp === 'sales' && <SalesAppShell />}
         {activeApp === 'admin_management' && isMasterAdmin && <UserManagementAdmin />}
       </main>
     </div>
@@ -444,6 +452,30 @@ function ShippingAppShell() {
 
       {subTab === 'pantone' && <Cin7Fulfillment />}
       {subTab === 'shopify' && <ShopifyFulfillment />}
+    </div>
+  );
+}
+
+// Sales & Invoicing. One sub-tab for now, but this is where the custom-order
+// PO module lands later, so the shell is here rather than mounting
+// CreateInvoice directly off App.
+function SalesAppShell() {
+  const [subTab, setSubTab] = useState('invoice');
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 bg-white p-1 rounded-lg border border-slate-200 max-w-fit">
+        <button
+          onClick={() => setSubTab('invoice')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer transition-colors ${
+            subTab === 'invoice' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          🧾 Create invoice
+        </button>
+      </div>
+
+      {subTab === 'invoice' && <CreateInvoice />}
     </div>
   );
 }
