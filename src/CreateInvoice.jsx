@@ -70,9 +70,10 @@ function getTotals(draft) {
       shipping: Number(draft.shipping) || 0,
       tax: Number(draft.tax) || 0,
       total: Number(draft.total) || 0,
-      taxRateLabel: apiSubtotal > 0 && draft.tax > 0
-        ? `${Math.round((draft.tax / apiSubtotal) * 100)}%`
-        : '10%',
+      // GST is a fixed 10% -- deriving it from tax/subtotal produced
+      // rounding artifacts (e.g. "9%") on orders with many differently
+      // rounded line items, even though the real rate never changed.
+      taxRateLabel: '10%',
     };
   }
 
@@ -136,21 +137,21 @@ const s = StyleSheet.create({
 
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
   logo: { width: 100, height: 50, objectFit: 'contain' },
-  companyBlock: { width: '48%', alignItems: 'flex-end', textAlign: 'right' },
+  companyBlock: { width: '48%', alignItems: 'flex-start', textAlign: 'left' },
   companyName: { fontSize: 9.5, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
-  companyLine: { color: '#4b5563', lineHeight: 0.9 },
+  companyLine: { color: '#4b5563', lineHeight: 0.8 },
 
   partiesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
   partyCol: { width: '28%' },
-  partyLabel: { fontSize: 7, letterSpacing: 0.5, color: '#6b7280', marginBottom: 3 },
-  partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2 },
-  partyLine: { color: '#4b5563', lineHeight: 0.9 },
+  partyLabel: { fontSize: 8, letterSpacing: 0.5, color: '#6b7280', marginBottom: 3 },
+  partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2, fontSize: 10 },
+  partyLine: { color: '#4b5563', lineHeight: 0.8, fontSize: 9.5 },
 
   docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
-  qr: { width: 45, height: 45, marginRight: 8 },
+  qr: { width: 62, height: 62, marginRight: 10 },
   docTitleWrap: { alignItems: 'flex-end' },
-  docTitle: { fontSize: 20, color: '#111827', marginBottom: 2 },
-  docMeta: { color: '#4b5563' },
+  docTitle: { fontSize: 26, color: '#111827', marginBottom: 3 },
+  docMeta: { color: '#4b5563', fontSize: 9.5 },
 
   tHead: {
     flexDirection: 'row',
@@ -201,7 +202,7 @@ const s = StyleSheet.create({
   paymentBlock: { width: '48%' },
   paymentLabel: { fontSize: 7, letterSpacing: 0.5, color: '#6b7280', marginBottom: 3, fontFamily: 'Helvetica-Bold' },
   paymentNote: { color: '#111827', marginBottom: 2, fontFamily: 'Helvetica-Bold' },
-  paymentLine: { color: '#4b5563', lineHeight: 0.9 },
+  paymentLine: { color: '#4b5563', lineHeight: 0.8 },
 
   footer: { position: 'absolute', bottom: 30, left: 30, right: 30 },
   footerHead: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#111827', letterSpacing: 0.3, marginBottom: 1 },
@@ -605,7 +606,7 @@ export default function CreateInvoice() {
                 <div className="border border-slate-200 rounded-lg p-5 text-[11px] text-slate-700">
                   <div className="flex justify-between gap-6 mb-4">
                     <img src={logoUrl} alt="" className="h-12 object-contain" />
-                    <div className="text-right text-slate-500 leading-tight">
+                    <div className="text-left text-slate-500 leading-tight">
                       <div className="text-sm font-bold text-slate-900">{COMPANY.name}</div>
                       <div>ABN: {COMPANY.abn}</div>
                       {COMPANY.addressLines.map((l) => (
@@ -618,24 +619,24 @@ export default function CreateInvoice() {
 
                   <div className="grid grid-cols-3 gap-4 mb-4">
                     <div>
-                      <div className="text-[9px] tracking-wide text-slate-400 mb-1">INVOICE TO</div>
-                      <div className="font-bold text-slate-900">{detail.customer_name}</div>
+                      <div className="text-[10px] tracking-wide text-slate-400 mb-1">INVOICE TO</div>
+                      <div className="font-bold text-slate-900 text-[13px]">{detail.customer_name}</div>
                       {addressLines(detail.billing_address).map((l, i) => (
-                        <div key={i} className="text-slate-500 leading-tight">{l}</div>
+                        <div key={i} className="text-slate-500 leading-tight text-[12px]">{l}</div>
                       ))}
                     </div>
                     <div>
-                      <div className="text-[9px] tracking-wide text-slate-400 mb-1">SHIP TO</div>
-                      <div className="font-bold text-slate-900">{detail.customer_name}</div>
+                      <div className="text-[10px] tracking-wide text-slate-400 mb-1">SHIP TO</div>
+                      <div className="font-bold text-slate-900 text-[13px]">{detail.customer_name}</div>
                       {addressLines(detail.shipping_address).map((l, i) => (
-                        <div key={i} className="text-slate-500 leading-tight">{l}</div>
+                        <div key={i} className="text-slate-500 leading-tight text-[12px]">{l}</div>
                       ))}
                     </div>
                     <div className="text-right">
-                      <div className="text-lg font-bold text-slate-900">
+                      <div className="text-2xl font-bold text-slate-900">
                         {DOC_TYPES[docType].label === 'INVOICE' ? 'INVOICE' : 'Quote'}
                       </div>
-                      <div className="text-slate-500">#{docNumber}, {fmtDate(issuedAt)}</div>
+                      <div className="text-slate-500 text-[12px]">#{docNumber}, {fmtDate(issuedAt)}</div>
                     </div>
                   </div>
 
