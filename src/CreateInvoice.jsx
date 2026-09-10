@@ -138,13 +138,13 @@ const s = StyleSheet.create({
   logo: { width: 100, height: 50, objectFit: 'contain' },
   companyBlock: { width: '48%', alignItems: 'flex-end', textAlign: 'right' },
   companyName: { fontSize: 9.5, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
-  companyLine: { color: '#4b5563', lineHeight: 1 },
+  companyLine: { color: '#4b5563', lineHeight: 0.9 },
 
   partiesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
   partyCol: { width: '28%' },
   partyLabel: { fontSize: 7, letterSpacing: 0.5, color: '#6b7280', marginBottom: 3 },
   partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2 },
-  partyLine: { color: '#4b5563', lineHeight: 1 },
+  partyLine: { color: '#4b5563', lineHeight: 0.9 },
 
   docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
   qr: { width: 45, height: 45, marginRight: 8 },
@@ -201,7 +201,7 @@ const s = StyleSheet.create({
   paymentBlock: { width: '48%' },
   paymentLabel: { fontSize: 7, letterSpacing: 0.5, color: '#6b7280', marginBottom: 3, fontFamily: 'Helvetica-Bold' },
   paymentNote: { color: '#111827', marginBottom: 2, fontFamily: 'Helvetica-Bold' },
-  paymentLine: { color: '#4b5563', lineHeight: 1 },
+  paymentLine: { color: '#4b5563', lineHeight: 0.9 },
 
   footer: { position: 'absolute', bottom: 30, left: 30, right: 30 },
   footerHead: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#111827', letterSpacing: 0.3, marginBottom: 1 },
