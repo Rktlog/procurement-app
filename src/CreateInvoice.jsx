@@ -53,15 +53,49 @@ const fmtDate = (d) =>
     year: 'numeric',
   });
 
-const addressLines = (a) =>
+const addressLines = (a, customerName) =>
   !a
     ? []
     : [
-        a.name,
+        // Drop the address's own "name" field when it just repeats the
+        // customer name printed above it -- otherwise it shows twice.
+        a.name && a.name !== customerName ? a.name : null,
         [a.address1, a.address2].filter(Boolean).join(', '),
         a.city,
         [a.zip, a.countryCodeV2 === 'AU' ? 'Australia' : a.countryCodeV2].filter(Boolean).join(', '),
       ].filter(Boolean);
+
+// Shopify's rolled-up subtotal/tax/total fields have come back as zero on
+// some drafts here despite real line items -- likely a draft that hasn't
+// gone through Shopify's own recalculate step. Rather than ship a $0.00
+// invoice, recompute from the line items whenever the API total doesn't
+// match what the lines actually add up to.
+function getTotals(draft) {
+  const linesSum = draft.lines.reduce((sum, l) => sum + (Number(l.line_total) || 0), 0);
+  const apiSubtotal = Number(draft.subtotal) || 0;
+
+  if (apiSubtotal > 0 && Math.abs(apiSubtotal - linesSum) < 0.5) {
+    // API totals look trustworthy, use them as-is.
+    return {
+      subtotal: apiSubtotal,
+      shipping: Number(draft.shipping) || 0,
+      tax: Number(draft.tax) || 0,
+      total: Number(draft.total) || 0,
+      taxRateLabel: apiSubtotal > 0 && draft.tax > 0
+        ? `${Math.round((draft.tax / apiSubtotal) * 100)}%`
+        : '10%',
+    };
+  }
+
+  // Fall back to line-item totals. GST rate assumed 10% (AU) since the
+  // API didn't give us a reliable figure to derive the real rate from.
+  const shipping = Number(draft.shipping) || 0;
+  const subtotal = linesSum;
+  const tax = draft.taxes_included ? subtotal - subtotal / 1.1 : subtotal * 0.1;
+  const total = draft.taxes_included ? subtotal + shipping : subtotal + shipping + tax;
+
+  return { subtotal, shipping, tax, total, taxRateLabel: '10%' };
+}
 
 // Fetches an image (logo or product thumbnail) and returns a base64 data
 // URI. @react-pdf/renderer's browser build is unreliable pulling remote
@@ -95,7 +129,7 @@ const s = StyleSheet.create({
   partyCol: { width: '25%' },
   partyLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 4 },
   partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2 },
-  partyLine: { color: '#4b5563', lineHeight: 1.4 },
+  partyLine: { color: '#4b5563', lineHeight: 1.6 },
 
   docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
   qr: { width: 50, height: 50, marginRight: 10, marginTop: 3 },
@@ -114,7 +148,7 @@ const s = StyleSheet.create({
   tRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 11,
     paddingHorizontal: 8,
     borderBottomWidth: 0.5,
     borderBottomColor: '#e5e7eb',
@@ -122,10 +156,10 @@ const s = StyleSheet.create({
   tRowShaded: { backgroundColor: '#f2f4f6' },
 
   cThumb: { width: '9%' },
-  thumbImg: { width: 28, height: 28, objectFit: 'cover', borderRadius: 3 },
+  thumbImg: { width: 32, height: 32, objectFit: 'cover', borderRadius: 3 },
   cProduct: { width: '46%', paddingRight: 6 },
-  productTitle: { color: '#111827', fontFamily: 'Helvetica-Bold' },
-  productVariant: { color: '#9ca3af', fontSize: 8, marginTop: 1 },
+  productTitle: { color: '#111827', fontFamily: 'Helvetica-Bold', lineHeight: 1.4 },
+  productVariant: { color: '#9ca3af', fontSize: 8, marginTop: 3 },
   cPrice: { width: '15%' },
   cQty: { width: '10%' },
   cTotal: { width: '20%', textAlign: 'right' },
@@ -163,8 +197,9 @@ const s = StyleSheet.create({
 function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUri, lineImages }) {
   const cfg = DOC_TYPES[docType];
   const cur = draft.currency || 'AUD';
-  const billLines = addressLines(draft.billing_address);
-  const shipLines = addressLines(draft.shipping_address);
+  const totals = getTotals(draft);
+  const billLines = addressLines(draft.billing_address, draft.customer_name);
+  const shipLines = addressLines(draft.shipping_address, draft.customer_name);
 
   return (
     <Document title={`${docNumber} ${draft.customer_name}`}>
@@ -235,23 +270,19 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUr
         <View style={{ marginTop: 8, width: '48%', marginLeft: '52%' }}>
           <View style={s.summaryRow}>
             <Text style={s.summaryLabel}>Subtotal</Text>
-            <Text>{fmtMoney(draft.subtotal, cur)}</Text>
+            <Text>{fmtMoney(totals.subtotal, cur)}</Text>
           </View>
           <View style={s.summaryRow}>
             <Text style={s.summaryLabel}>Shipping</Text>
-            <Text>{fmtMoney(draft.shipping, cur)}</Text>
+            <Text>{fmtMoney(totals.shipping, cur)}</Text>
           </View>
           <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>
-              Tax {draft.tax > 0 && draft.subtotal > 0
-                ? `${Math.round((draft.tax / draft.subtotal) * 100)}%`
-                : '10%'}
-            </Text>
-            <Text>{fmtMoney(draft.tax, cur)}</Text>
+            <Text style={s.summaryLabel}>Tax {totals.taxRateLabel}</Text>
+            <Text>{fmtMoney(totals.tax, cur)}</Text>
           </View>
           <View style={s.summaryTotalRow}>
             <Text style={s.summaryTotalLabel}>Total</Text>
-            <Text style={s.summaryTotalValue}>{fmtMoney(draft.total, cur)}</Text>
+            <Text style={s.summaryTotalValue}>{fmtMoney(totals.total, cur)}</Text>
           </View>
         </View>
 
@@ -310,6 +341,8 @@ export default function CreateInvoice() {
     const n = detail?.name?.replace(/\D/g, '') || 'PREVIEW';
     return `${DOC_TYPES[docType].prefix}-${n}`;
   }, [detail, docType]);
+
+  const previewTotals = useMemo(() => (detail ? getTotals(detail) : null), [detail]);
 
   useEffect(() => {
     loadDrafts();
@@ -601,21 +634,21 @@ export default function CreateInvoice() {
                     <div>
                       <div className="text-[9px] tracking-wide text-slate-400 mb-1">INVOICE TO</div>
                       <div className="font-bold text-slate-900">{detail.customer_name}</div>
-                      {(addressLines(detail.billing_address).length
-                        ? addressLines(detail.billing_address)
+                      {(addressLines(detail.billing_address, detail.customer_name).length
+                        ? addressLines(detail.billing_address, detail.customer_name)
                         : ['—']
                       ).map((l, i) => (
-                        <div key={i} className="text-slate-500">{l}</div>
+                        <div key={i} className="text-slate-500 leading-relaxed">{l}</div>
                       ))}
                     </div>
                     <div>
                       <div className="text-[9px] tracking-wide text-slate-400 mb-1">SHIP TO</div>
                       <div className="font-bold text-slate-900">{detail.customer_name}</div>
-                      {(addressLines(detail.shipping_address).length
-                        ? addressLines(detail.shipping_address)
+                      {(addressLines(detail.shipping_address, detail.customer_name).length
+                        ? addressLines(detail.shipping_address, detail.customer_name)
                         : ['—']
                       ).map((l, i) => (
-                        <div key={i} className="text-slate-500">{l}</div>
+                        <div key={i} className="text-slate-500 leading-relaxed">{l}</div>
                       ))}
                     </div>
                     <div className="text-right">
@@ -639,20 +672,20 @@ export default function CreateInvoice() {
                     <tbody>
                       {detail.lines.map((l, i) => (
                         <tr key={i} className={i % 2 === 1 ? 'bg-slate-50' : ''}>
-                          <td className="py-1.5 px-2">
+                          <td className="py-2.5 px-2">
                             {l.image_url && (
-                              <img src={l.image_url} alt="" className="w-6 h-6 object-cover rounded" />
+                              <img src={l.image_url} alt="" className="w-7 h-7 object-cover rounded" />
                             )}
                           </td>
-                          <td className="py-1.5 px-2">
+                          <td className="py-2.5 px-2">
                             <div className="font-bold text-slate-900">{l.title}</div>
                             {l.variant_title && (
-                              <div className="text-slate-400 text-[10px]">{l.variant_title}</div>
+                              <div className="text-slate-400 text-[10px] mt-0.5">{l.variant_title}</div>
                             )}
                           </td>
-                          <td className="py-1.5 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
-                          <td className="py-1.5 px-2">{l.qty}</td>
-                          <td className="py-1.5 px-2 text-right">
+                          <td className="py-2.5 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
+                          <td className="py-2.5 px-2">{l.qty}</td>
+                          <td className="py-2.5 px-2 text-right">
                             {fmtMoney(l.line_total, detail.currency)}
                           </td>
                         </tr>
@@ -664,22 +697,22 @@ export default function CreateInvoice() {
                     <div className="w-64">
                       <div className="flex justify-between py-1.5 border-b border-slate-100">
                         <span className="text-slate-500">Subtotal</span>
-                        <span>{fmtMoney(detail.subtotal, detail.currency)}</span>
+                        <span>{fmtMoney(previewTotals.subtotal, detail.currency)}</span>
                       </div>
                       <div className="flex justify-between py-1.5 border-b border-slate-100">
                         <span className="text-slate-500">Shipping</span>
-                        <span>{fmtMoney(detail.shipping, detail.currency)}</span>
+                        <span>{fmtMoney(previewTotals.shipping, detail.currency)}</span>
                       </div>
                       <div className="flex justify-between py-1.5 border-b border-slate-100">
-                        <span className="text-slate-500">Tax</span>
-                        <span>{fmtMoney(detail.tax, detail.currency)}</span>
+                        <span className="text-slate-500">Tax {previewTotals.taxRateLabel}</span>
+                        <span>{fmtMoney(previewTotals.tax, detail.currency)}</span>
                       </div>
                       <div
                         className="flex justify-between py-2 px-2 mt-1 font-bold text-white"
                         style={{ backgroundColor: '#c2c2c2' }}
                       >
                         <span>Total</span>
-                        <span>{fmtMoney(detail.total, detail.currency)}</span>
+                        <span>{fmtMoney(previewTotals.total, detail.currency)}</span>
                       </div>
                     </div>
                   </div>
