@@ -114,6 +114,21 @@ async function toDataUri(url) {
   });
 }
 
+// Product thumbnails come from the Shopify CDN, and converting them to a
+// data URI in-browser requires fetch() to actually read the bytes -- which
+// the browser blocks unless that specific CDN response carries the right
+// CORS header. A plain <img> tag can display the same image fine (no CORS
+// involved in just rendering it), which is why the on-screen preview works
+// but this direct-fetch path was silently failing. Routed through the
+// proxy instead: server-to-server requests aren't subject to CORS at all.
+async function toDataUriViaProxy(url) {
+  const { data, error } = await supabase.functions.invoke('shopify-proxy', {
+    body: { action: 'fetch_image_data_uri', imageUrl: url },
+  });
+  if (error || !data?.success) return null;
+  return data.dataUri;
+}
+
 // ---------------------------------------------------------------------------
 // PDF document
 // ---------------------------------------------------------------------------
@@ -127,11 +142,11 @@ const s = StyleSheet.create({
   companyName: { fontSize: 10, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
   companyLine: { color: '#4b5563', lineHeight: 1.5 },
 
-  partiesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 32 },
+  partiesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 22 },
   partyCol: { width: '25%' },
-  partyLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 6 },
-  partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 5 },
-  partyLine: { color: '#4b5563', lineHeight: 1.7 },
+  partyLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 4 },
+  partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2 },
+  partyLine: { color: '#4b5563', lineHeight: 1.5 },
 
   docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
   qr: { width: 50, height: 50, marginRight: 10, marginTop: 3 },
@@ -150,7 +165,7 @@ const s = StyleSheet.create({
   tRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 9,
     paddingHorizontal: 8,
     borderBottomWidth: 0.5,
     borderBottomColor: '#e5e7eb',
@@ -161,7 +176,7 @@ const s = StyleSheet.create({
   thumbImg: { width: 34, height: 34, objectFit: 'cover', borderRadius: 3 },
   cProduct: { width: '46%', paddingRight: 6 },
   productTitle: { color: '#111827', fontFamily: 'Helvetica-Bold', lineHeight: 1.4 },
-  productVariant: { color: '#9ca3af', fontSize: 8, marginTop: 4 },
+  productVariant: { color: '#9ca3af', fontSize: 8, marginTop: 2 },
   cPrice: { width: '15%' },
   cQty: { width: '10%' },
   cTotal: { width: '20%', textAlign: 'right' },
@@ -185,13 +200,12 @@ const s = StyleSheet.create({
   summaryTotalLabel: { color: '#f3f4f6', fontFamily: 'Helvetica-Bold' },
   summaryTotalValue: { color: '#f3f4f6', fontFamily: 'Helvetica-Bold' },
 
-  bottomRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 40 },
   paymentBlock: { width: '48%' },
   paymentLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 5, fontFamily: 'Helvetica-Bold' },
   paymentNote: { color: '#111827', marginBottom: 4 },
   paymentLine: { color: '#4b5563', lineHeight: 1.5 },
 
-  footer: { marginTop: 60, borderTopWidth: 0.5, borderTopColor: '#e5e7eb', paddingTop: 10 },
+  footer: { position: 'absolute', bottom: 40, left: 40, right: 40 },
   footerHead: { fontSize: 7.5, fontFamily: 'Helvetica-Bold', color: '#111827', letterSpacing: 0.3, marginBottom: 2 },
   footerBody: { color: '#6b7280' },
 });
@@ -211,12 +225,11 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUr
 
           <View style={s.companyBlock}>
             <Text style={s.companyName}>{COMPANY.name}</Text>
-            <Text style={s.companyLine}>ABN: {COMPANY.abn}</Text>
-            {COMPANY.addressLines.map((l) => (
-              <Text key={l} style={s.companyLine}>{l}</Text>
-            ))}
-            <Text style={s.companyLine}>Phone: {COMPANY.phone}</Text>
-            <Text style={s.companyLine}>Email: {COMPANY.email}</Text>
+            <Text style={s.companyLine}>
+              {[`ABN: ${COMPANY.abn}`, ...COMPANY.addressLines, `Phone: ${COMPANY.phone}`, `Email: ${COMPANY.email}`].join(
+                '\n'
+              )}
+            </Text>
           </View>
         </View>
 
@@ -224,17 +237,15 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUr
           <View style={s.partyCol}>
             <Text style={s.partyLabel}>INVOICE TO</Text>
             <Text style={s.partyName}>{draft.customer_name || 'Customer'}</Text>
-            {(billLines.length ? billLines : ['—']).map((l, i) => (
-              <Text key={i} style={s.partyLine}>{l}</Text>
-            ))}
+            <Text style={s.partyLine}>{(billLines.length ? billLines : ['—']).join('\n')}</Text>
           </View>
 
           <View style={s.partyCol}>
             <Text style={s.partyLabel}>SHIP TO</Text>
             <Text style={s.partyName}>{draft.customer_name || 'Customer'}</Text>
-            {(shipLines.length ? shipLines : billLines.length ? billLines : ['—']).map((l, i) => (
-              <Text key={i} style={s.partyLine}>{l}</Text>
-            ))}
+            <Text style={s.partyLine}>
+              {(shipLines.length ? shipLines : billLines.length ? billLines : ['—']).join('\n')}
+            </Text>
           </View>
 
           <View style={s.docBlock}>
@@ -269,41 +280,49 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUr
           </View>
         ))}
 
-        <View style={{ marginTop: 8, width: '48%', marginLeft: '52%' }}>
-          <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Subtotal</Text>
-            <Text>{fmtMoney(totals.subtotal, cur)}</Text>
-          </View>
-          <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Shipping</Text>
-            <Text>{fmtMoney(totals.shipping, cur)}</Text>
-          </View>
-          <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Tax {totals.taxRateLabel}</Text>
-            <Text>{fmtMoney(totals.tax, cur)}</Text>
-          </View>
-          <View style={s.summaryTotalRow}>
-            <Text style={s.summaryTotalLabel}>Total</Text>
-            <Text style={s.summaryTotalValue}>{fmtMoney(totals.total, cur)}</Text>
-          </View>
-        </View>
-
-        <View style={s.bottomRow}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 14 }}>
           {cfg.showPayment ? (
             <View style={s.paymentBlock}>
               <Text style={s.paymentLabel}>PAYMENT</Text>
               {COMPANY.paymentNote ? <Text style={s.paymentNote}>{COMPANY.paymentNote}</Text> : null}
-              <Text style={s.paymentLine}>{COMPANY.bank.accountName}</Text>
-              <Text style={s.paymentLine}>BSB: {COMPANY.bank.bsb}</Text>
-              <Text style={s.paymentLine}>Acc: {COMPANY.bank.account}</Text>
-              <Text style={s.paymentLine}>Ref: {docNumber}</Text>
+              <Text style={s.paymentLine}>
+                {[
+                  COMPANY.bank.accountName,
+                  `BSB: ${COMPANY.bank.bsb}`,
+                  `Acc: ${COMPANY.bank.account}`,
+                  `Ref: ${docNumber}`,
+                ].join('\n')}
+              </Text>
             </View>
           ) : (
             <View style={s.paymentBlock} />
           )}
+
+          <View style={{ width: '48%' }}>
+            <View style={s.summaryRow}>
+              <Text style={s.summaryLabel}>Subtotal</Text>
+              <Text>{fmtMoney(totals.subtotal, cur)}</Text>
+            </View>
+            <View style={s.summaryRow}>
+              <Text style={s.summaryLabel}>Shipping</Text>
+              <Text>{fmtMoney(totals.shipping, cur)}</Text>
+            </View>
+            <View style={s.summaryRow}>
+              <Text style={s.summaryLabel}>Tax {totals.taxRateLabel}</Text>
+              <Text>{fmtMoney(totals.tax, cur)}</Text>
+            </View>
+            <View style={s.summaryTotalRow}>
+              <Text style={s.summaryTotalLabel}>Total</Text>
+              <Text style={s.summaryTotalValue}>{fmtMoney(totals.total, cur)}</Text>
+            </View>
+          </View>
         </View>
 
-        <View style={s.footer}>
+        {/* Pinned near the page bottom rather than following the content --
+            matches the reference, where a short one-line invoice still
+            leaves the footer sitting at the bottom margin instead of
+            right under the totals. */}
+        <View style={s.footer} fixed>
           <Text style={s.footerHead}>THANK YOU FOR YOUR BUSINESS</Text>
           <Text style={s.footerBody}>
             Thank you for your {docType === 'quote' ? 'interest in' : 'purchase from'} {COMPANY.name}.
@@ -384,7 +403,7 @@ export default function CreateInvoice() {
       const [logoDataUri, lineImages] = await Promise.all([
         toDataUri(logoUrl).catch(() => null),
         Promise.all(
-          detail.lines.map((l) => (l.image_url ? toDataUri(l.image_url).catch(() => null) : null))
+          detail.lines.map((l) => (l.image_url ? toDataUriViaProxy(l.image_url) : null))
         ),
       ]);
 
@@ -674,20 +693,20 @@ export default function CreateInvoice() {
                     <tbody>
                       {detail.lines.map((l, i) => (
                         <tr key={i} className={i % 2 === 1 ? 'bg-slate-50' : ''}>
-                          <td className="py-3.5 px-2">
+                          <td className="py-2 px-2">
                             {l.image_url && (
                               <img src={l.image_url} alt="" className="w-7 h-7 object-cover rounded" />
                             )}
                           </td>
-                          <td className="py-3.5 px-2">
+                          <td className="py-2 px-2">
                             <div className="font-bold text-slate-900">{l.title}</div>
                             {l.variant_title && (
                               <div className="text-slate-400 text-[10px] mt-0.5">{l.variant_title}</div>
                             )}
                           </td>
-                          <td className="py-3.5 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
-                          <td className="py-3.5 px-2">{l.qty}</td>
-                          <td className="py-3.5 px-2 text-right">
+                          <td className="py-2 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
+                          <td className="py-2 px-2">{l.qty}</td>
+                          <td className="py-2 px-2 text-right">
                             {fmtMoney(l.line_total, detail.currency)}
                           </td>
                         </tr>
@@ -695,7 +714,20 @@ export default function CreateInvoice() {
                     </tbody>
                   </table>
 
-                  <div className="mt-2 flex justify-end">
+                  <div className="mt-3.5 flex justify-between items-start">
+                    {docType === 'invoice' ? (
+                      <div className="w-56">
+                        <div className="text-[9px] tracking-wide text-slate-400 mb-1.5">PAYMENT</div>
+                        <div className="text-slate-900">{COMPANY.paymentNote}</div>
+                        <div className="text-slate-500">{COMPANY.bank.accountName}</div>
+                        <div className="text-slate-500">BSB: {COMPANY.bank.bsb}</div>
+                        <div className="text-slate-500">Acc: {COMPANY.bank.account}</div>
+                        <div className="text-slate-500">Ref: {docNumber}</div>
+                      </div>
+                    ) : (
+                      <div className="w-56" />
+                    )}
+
                     <div className="w-64">
                       <div className="flex justify-between py-1.5 border-b border-slate-100">
                         <span className="text-slate-500">Subtotal</span>
@@ -718,17 +750,6 @@ export default function CreateInvoice() {
                       </div>
                     </div>
                   </div>
-
-                  {docType === 'invoice' && (
-                    <div className="mt-8">
-                      <div className="text-[9px] tracking-wide text-slate-400 mb-1.5">PAYMENT</div>
-                      <div className="text-slate-900">{COMPANY.paymentNote}</div>
-                      <div className="text-slate-500">{COMPANY.bank.accountName}</div>
-                      <div className="text-slate-500">BSB: {COMPANY.bank.bsb}</div>
-                      <div className="text-slate-500">Acc: {COMPANY.bank.account}</div>
-                      <div className="text-slate-500">Ref: {docNumber}</div>
-                    </div>
-                  )}
                 </div>
               </div>
             </>
