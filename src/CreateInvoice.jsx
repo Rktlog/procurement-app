@@ -1,43 +1,33 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabaseClient';
-import { Document, Page, Text, View, StyleSheet, pdf } from '@react-pdf/renderer';
+import { Document, Page, Text, View, StyleSheet, pdf, Image } from '@react-pdf/renderer';
+import QRCode from 'qrcode';
+import logoUrl from './assets/project-clothing-logo.png';
 
 // ---------------------------------------------------------------------------
-// EDIT THESE. They appear on every document you issue.
-// An Australian tax invoice must show the seller's identity and ABN, so the
-// ABN is not optional if you're issuing invoices rather than quotes.
+// Company details. Matches the old subscription app's invoice exactly so
+// customers see no difference.
 // ---------------------------------------------------------------------------
 const COMPANY = {
-  name: 'Rocket Logistics',
-  abn: '00 000 000 000',
-  addressLines: ['Unit 0, 000 Example Road', 'Melbourne VIC 3000', 'Australia'],
-  email: 'accounts@example.com.au',
-  phone: '+61 3 0000 0000',
+  name: 'Project Clothing',
+  abn: '61110042427',
+  addressLines: ['84 Stephenson St, Cremorne VIC 3121'],
+  phone: '+61 3 8652 5444',
+  email: 'hello@projectclothing.com.au',
   bank: {
-    name: 'Rocket Logistics Pty Ltd',
-    bsb: '000-000',
-    account: '0000 0000',
+    accountName: 'Project Clothing',
+    bsb: '013-435',
+    account: '220713053',
   },
+  // Shown verbatim above the bank details, same wording as the old app's
+  // output. Edit here if the account ever changes again.
+  paymentNote: 'Our bank account has changed!',
 };
 
 const DOC_TYPES = {
-  invoice: {
-    label: 'Tax invoice',
-    prefix: 'INV',
-    showDue: true,
-    showPayment: true,
-    intro: 'Payment is due by the date shown above.',
-  },
-  quote: {
-    label: 'Quotation',
-    prefix: 'QUO',
-    showDue: false,
-    showPayment: false,
-    intro: 'This quotation is valid for 30 days from the date of issue.',
-  },
+  invoice: { label: 'INVOICE', prefix: 'INV', showPayment: true },
+  quote: { label: 'Quote', prefix: 'Q', showPayment: false },
 };
-
-const DEFAULT_TERMS_DAYS = 14;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,9 +35,7 @@ const DEFAULT_TERMS_DAYS = 14;
 
 async function callProxy(body) {
   const { data, error } = await supabase.functions.invoke('shopify-proxy', { body });
-
   if (error) {
-    // invoke only surfaces the status, so the real message is in the body.
     const detail = await error.context?.json?.().catch(() => null);
     throw new Error(detail?.error || error.message);
   }
@@ -59,212 +47,235 @@ const fmtMoney = (n, currency = 'AUD') =>
   new Intl.NumberFormat('en-AU', { style: 'currency', currency }).format(Number(n) || 0);
 
 const fmtDate = (d) =>
-  d ? new Date(d).toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
-
-const addDays = (days) => {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
-};
+  (d ? new Date(d) : new Date()).toLocaleDateString('en-AU', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
 
 const addressLines = (a) =>
   !a
     ? []
     : [
-        a.company,
         a.name,
-        a.address1,
-        a.address2,
-        [a.city, a.provinceCode, a.zip].filter(Boolean).join(' '),
-        a.countryCodeV2,
+        [a.address1, a.address2].filter(Boolean).join(', '),
+        a.city,
+        [a.zip, a.countryCodeV2 === 'AU' ? 'Australia' : a.countryCodeV2].filter(Boolean).join(', '),
       ].filter(Boolean);
+
+// Fetches an image (logo or product thumbnail) and returns a base64 data
+// URI. @react-pdf/renderer's browser build is unreliable pulling remote
+// URLs directly at render time, so resolving to data URIs first is the
+// dependable path -- same reason the QR code below is generated as one.
+async function toDataUri(url) {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // PDF document
 // ---------------------------------------------------------------------------
 
-const pdfStyles = StyleSheet.create({
-  page: { padding: 40, fontSize: 9, color: '#1e293b', fontFamily: 'Helvetica' },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 28 },
-  company: { width: '55%' },
-  companyName: { fontSize: 14, fontFamily: 'Helvetica-Bold', marginBottom: 4 },
-  meta: { width: '40%', alignItems: 'flex-end' },
-  docTitle: { fontSize: 16, fontFamily: 'Helvetica-Bold', marginBottom: 6 },
-  metaLine: { flexDirection: 'row', marginBottom: 2 },
-  metaKey: { color: '#64748b', marginRight: 6 },
-  muted: { color: '#64748b', lineHeight: 1.5 },
+const s = StyleSheet.create({
+  page: { padding: 40, fontSize: 9, color: '#333333', fontFamily: 'Helvetica' },
+
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 26 },
+  logo: { width: 110, height: 75, objectFit: 'contain' },
+  companyBlock: { width: '48%', alignItems: 'flex-end', textAlign: 'right' },
+  companyName: { fontSize: 10, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
+  companyLine: { color: '#4b5563', lineHeight: 1.5 },
+
   partiesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 24 },
-  party: { width: '48%' },
-  partyLabel: { fontFamily: 'Helvetica-Bold', marginBottom: 4 },
+  partyCol: { width: '25%' },
+  partyLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 4 },
+  partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2 },
+  partyLine: { color: '#4b5563', lineHeight: 1.4 },
+
+  docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
+  qr: { width: 50, height: 50, marginRight: 10, marginTop: 3 },
+  docTitleWrap: { alignItems: 'flex-end' },
+  docTitle: { fontSize: 24, color: '#111827', marginBottom: 4 },
+  docMeta: { color: '#4b5563' },
+
   tHead: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
-    paddingBottom: 4,
-    marginBottom: 2,
-    fontFamily: 'Helvetica-Bold',
+    backgroundColor: '#c2c2c2',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    marginTop: 4,
   },
+  tHeadText: { fontSize: 7.5, fontFamily: 'Helvetica-Bold', color: '#ffffff', letterSpacing: 0.3 },
   tRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
     borderBottomWidth: 0.5,
-    borderBottomColor: '#e2e8f0',
-    paddingVertical: 5,
+    borderBottomColor: '#e5e7eb',
   },
-  cDesc: { width: '46%', paddingRight: 6 },
-  cSku: { width: '18%', paddingRight: 6 },
-  cQty: { width: '10%', textAlign: 'right' },
-  cUnit: { width: '13%', textAlign: 'right' },
-  cTotal: { width: '13%', textAlign: 'right' },
-  totals: { marginTop: 14, alignItems: 'flex-end' },
-  totalLine: { flexDirection: 'row', width: 200, justifyContent: 'space-between', paddingVertical: 2 },
-  grandTotal: {
+  tRowShaded: { backgroundColor: '#f2f4f6' },
+
+  cThumb: { width: '9%' },
+  thumbImg: { width: 28, height: 28, objectFit: 'cover', borderRadius: 3 },
+  cProduct: { width: '46%', paddingRight: 6 },
+  productTitle: { color: '#111827', fontFamily: 'Helvetica-Bold' },
+  productVariant: { color: '#9ca3af', fontSize: 8, marginTop: 1 },
+  cPrice: { width: '15%' },
+  cQty: { width: '10%' },
+  cTotal: { width: '20%', textAlign: 'right' },
+
+  summaryRow: {
     flexDirection: 'row',
-    width: 200,
     justifyContent: 'space-between',
-    borderTopWidth: 1,
-    borderTopColor: '#1e293b',
-    marginTop: 4,
-    paddingTop: 5,
-    fontFamily: 'Helvetica-Bold',
-    fontSize: 11,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#e5e7eb',
   },
-  footer: { marginTop: 28, paddingTop: 12, borderTopWidth: 0.5, borderTopColor: '#e2e8f0' },
-  payBlock: { marginTop: 10 },
-  payLabel: { fontFamily: 'Helvetica-Bold', marginBottom: 3 },
-  link: { color: '#2563eb' },
+  summaryLabel: { color: '#4b5563' },
+  summaryTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#c2c2c2',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  summaryTotalLabel: { color: '#f3f4f6', fontFamily: 'Helvetica-Bold' },
+  summaryTotalValue: { color: '#f3f4f6', fontFamily: 'Helvetica-Bold' },
+
+  bottomRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 40 },
+  paymentBlock: { width: '48%' },
+  paymentLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 5, fontFamily: 'Helvetica-Bold' },
+  paymentNote: { color: '#111827', marginBottom: 4 },
+  paymentLine: { color: '#4b5563', lineHeight: 1.5 },
+
+  footer: { marginTop: 60, borderTopWidth: 0.5, borderTopColor: '#e5e7eb', paddingTop: 10 },
+  footerHead: { fontSize: 7.5, fontFamily: 'Helvetica-Bold', color: '#111827', letterSpacing: 0.3, marginBottom: 2 },
+  footerBody: { color: '#6b7280' },
 });
 
-function InvoicePDF({ draft, docType, docNumber, issuedAt, dueAt }) {
+function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUri, lineImages }) {
   const cfg = DOC_TYPES[docType];
   const cur = draft.currency || 'AUD';
+  const billLines = addressLines(draft.billing_address);
+  const shipLines = addressLines(draft.shipping_address);
 
   return (
     <Document title={`${docNumber} ${draft.customer_name}`}>
-      <Page size="A4" style={pdfStyles.page}>
-        <View style={pdfStyles.headerRow}>
-          <View style={pdfStyles.company}>
-            <Text style={pdfStyles.companyName}>{COMPANY.name}</Text>
-            <Text style={pdfStyles.muted}>
-              {COMPANY.addressLines.join('\n')}
-              {'\n'}ABN {COMPANY.abn}
-              {'\n'}{COMPANY.email} · {COMPANY.phone}
-            </Text>
+      <Page size="A4" style={s.page}>
+        <View style={s.headerRow}>
+          {logoDataUri ? <Image src={logoDataUri} style={s.logo} /> : <View style={{ width: 110 }} />}
+
+          <View style={s.companyBlock}>
+            <Text style={s.companyName}>{COMPANY.name}</Text>
+            <Text style={s.companyLine}>ABN: {COMPANY.abn}</Text>
+            {COMPANY.addressLines.map((l) => (
+              <Text key={l} style={s.companyLine}>{l}</Text>
+            ))}
+            <Text style={s.companyLine}>Phone: {COMPANY.phone}</Text>
+            <Text style={s.companyLine}>Email: {COMPANY.email}</Text>
+          </View>
+        </View>
+
+        <View style={s.partiesRow}>
+          <View style={s.partyCol}>
+            <Text style={s.partyLabel}>INVOICE TO</Text>
+            <Text style={s.partyName}>{draft.customer_name || 'Customer'}</Text>
+            {(billLines.length ? billLines : ['—']).map((l, i) => (
+              <Text key={i} style={s.partyLine}>{l}</Text>
+            ))}
           </View>
 
-          <View style={pdfStyles.meta}>
-            <Text style={pdfStyles.docTitle}>{cfg.label}</Text>
-            <View style={pdfStyles.metaLine}>
-              <Text style={pdfStyles.metaKey}>Number</Text>
-              <Text>{docNumber}</Text>
-            </View>
-            <View style={pdfStyles.metaLine}>
-              <Text style={pdfStyles.metaKey}>Issued</Text>
-              <Text>{fmtDate(issuedAt)}</Text>
-            </View>
-            {cfg.showDue && (
-              <View style={pdfStyles.metaLine}>
-                <Text style={pdfStyles.metaKey}>Due</Text>
-                <Text>{fmtDate(dueAt)}</Text>
-              </View>
-            )}
-            <View style={pdfStyles.metaLine}>
-              <Text style={pdfStyles.metaKey}>Order</Text>
-              <Text>{draft.name}</Text>
+          <View style={s.partyCol}>
+            <Text style={s.partyLabel}>SHIP TO</Text>
+            <Text style={s.partyName}>{draft.customer_name || 'Customer'}</Text>
+            {(shipLines.length ? shipLines : billLines.length ? billLines : ['—']).map((l, i) => (
+              <Text key={i} style={s.partyLine}>{l}</Text>
+            ))}
+          </View>
+
+          <View style={s.docBlock}>
+            {qrDataUri && <Image src={qrDataUri} style={s.qr} />}
+            <View style={s.docTitleWrap}>
+              <Text style={s.docTitle}>{cfg.label}</Text>
+              <Text style={s.docMeta}>#{docNumber}, {fmtDate(issuedAt)}</Text>
             </View>
           </View>
         </View>
 
-        <View style={pdfStyles.partiesRow}>
-          <View style={pdfStyles.party}>
-            <Text style={pdfStyles.partyLabel}>Bill to</Text>
-            <Text style={pdfStyles.muted}>
-              {(addressLines(draft.billing_address).length
-                ? addressLines(draft.billing_address)
-                : [draft.customer_name]
-              ).join('\n')}
-              {draft.email ? `\n${draft.email}` : ''}
-            </Text>
-          </View>
-
-          {addressLines(draft.shipping_address).length > 0 && (
-            <View style={pdfStyles.party}>
-              <Text style={pdfStyles.partyLabel}>Deliver to</Text>
-              <Text style={pdfStyles.muted}>{addressLines(draft.shipping_address).join('\n')}</Text>
-            </View>
-          )}
-        </View>
-
-        <View style={pdfStyles.tHead}>
-          <Text style={pdfStyles.cDesc}>Description</Text>
-          <Text style={pdfStyles.cSku}>SKU</Text>
-          <Text style={pdfStyles.cQty}>Qty</Text>
-          <Text style={pdfStyles.cUnit}>Unit</Text>
-          <Text style={pdfStyles.cTotal}>Amount</Text>
+        <View style={s.tHead}>
+          <Text style={{ ...s.tHeadText, width: '9%' }}></Text>
+          <Text style={{ ...s.tHeadText, width: '46%' }}>PRODUCT</Text>
+          <Text style={{ ...s.tHeadText, width: '15%' }}>PRICE</Text>
+          <Text style={{ ...s.tHeadText, width: '10%' }}>QTY</Text>
+          <Text style={{ ...s.tHeadText, width: '20%', textAlign: 'right' }}>TOTAL</Text>
         </View>
 
         {draft.lines.map((l, i) => (
-          <View key={i} style={pdfStyles.tRow} wrap={false}>
-            <Text style={pdfStyles.cDesc}>
-              {l.title}
-              {l.variant_title ? ` — ${l.variant_title}` : ''}
-            </Text>
-            <Text style={pdfStyles.cSku}>{l.sku || '—'}</Text>
-            <Text style={pdfStyles.cQty}>{l.qty}</Text>
-            <Text style={pdfStyles.cUnit}>{fmtMoney(l.unit_price, cur)}</Text>
-            <Text style={pdfStyles.cTotal}>{fmtMoney(l.line_total, cur)}</Text>
+          <View key={i} style={[s.tRow, i % 2 === 1 ? s.tRowShaded : null]} wrap={false}>
+            <View style={s.cThumb}>
+              {lineImages[i] ? <Image src={lineImages[i]} style={s.thumbImg} /> : null}
+            </View>
+            <View style={s.cProduct}>
+              <Text style={s.productTitle}>{l.title}</Text>
+              {l.variant_title ? <Text style={s.productVariant}>{l.variant_title}</Text> : null}
+            </View>
+            <Text style={s.cPrice}>{fmtMoney(l.unit_price, cur)}</Text>
+            <Text style={s.cQty}>{l.qty}</Text>
+            <Text style={s.cTotal}>{fmtMoney(l.line_total, cur)}</Text>
           </View>
         ))}
 
-        <View style={pdfStyles.totals}>
-          <View style={pdfStyles.totalLine}>
-            <Text style={pdfStyles.metaKey}>
-              Subtotal {draft.taxes_included ? '(incl. GST)' : '(excl. GST)'}
-            </Text>
+        <View style={{ marginTop: 8, width: '48%', marginLeft: '52%' }}>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Subtotal</Text>
             <Text>{fmtMoney(draft.subtotal, cur)}</Text>
           </View>
-
-          {draft.shipping > 0 && (
-            <View style={pdfStyles.totalLine}>
-              <Text style={pdfStyles.metaKey}>Shipping</Text>
-              <Text>{fmtMoney(draft.shipping, cur)}</Text>
-            </View>
-          )}
-
-          <View style={pdfStyles.totalLine}>
-            <Text style={pdfStyles.metaKey}>
-              GST {draft.taxes_included ? 'included' : ''}
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Shipping</Text>
+            <Text>{fmtMoney(draft.shipping, cur)}</Text>
+          </View>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>
+              Tax {draft.tax > 0 && draft.subtotal > 0
+                ? `${Math.round((draft.tax / draft.subtotal) * 100)}%`
+                : '10%'}
             </Text>
             <Text>{fmtMoney(draft.tax, cur)}</Text>
           </View>
-
-          <View style={pdfStyles.grandTotal}>
-            <Text>Total {cur}</Text>
-            <Text>{fmtMoney(draft.total, cur)}</Text>
+          <View style={s.summaryTotalRow}>
+            <Text style={s.summaryTotalLabel}>Total</Text>
+            <Text style={s.summaryTotalValue}>{fmtMoney(draft.total, cur)}</Text>
           </View>
         </View>
 
-        <View style={pdfStyles.footer}>
-          <Text style={pdfStyles.muted}>{cfg.intro}</Text>
-
-          {draft.note ? <Text style={{ ...pdfStyles.muted, marginTop: 8 }}>{draft.note}</Text> : null}
-
-          {cfg.showPayment && (
-            <View style={pdfStyles.payBlock}>
-              <Text style={pdfStyles.payLabel}>Bank transfer</Text>
-              <Text style={pdfStyles.muted}>
-                {COMPANY.bank.name}
-                {'\n'}BSB {COMPANY.bank.bsb} · Account {COMPANY.bank.account}
-                {'\n'}Please quote {docNumber} as the reference.
-              </Text>
-
-              {draft.invoice_url ? (
-                <Text style={{ ...pdfStyles.muted, marginTop: 8 }}>
-                  Or pay by card:{' '}
-                  <Text style={pdfStyles.link}>{draft.invoice_url}</Text>
-                </Text>
-              ) : null}
+        <View style={s.bottomRow}>
+          {cfg.showPayment ? (
+            <View style={s.paymentBlock}>
+              <Text style={s.paymentLabel}>PAYMENT</Text>
+              {COMPANY.paymentNote ? <Text style={s.paymentNote}>{COMPANY.paymentNote}</Text> : null}
+              <Text style={s.paymentLine}>{COMPANY.bank.accountName}</Text>
+              <Text style={s.paymentLine}>BSB: {COMPANY.bank.bsb}</Text>
+              <Text style={s.paymentLine}>Acc: {COMPANY.bank.account}</Text>
+              <Text style={s.paymentLine}>Ref: {docNumber}</Text>
             </View>
+          ) : (
+            <View style={s.paymentBlock} />
           )}
+        </View>
+
+        <View style={s.footer}>
+          <Text style={s.footerHead}>THANK YOU FOR YOUR BUSINESS</Text>
+          <Text style={s.footerBody}>
+            Thank you for your {docType === 'quote' ? 'interest in' : 'purchase from'} {COMPANY.name}.
+            Please let us know if we can do anything else for you!
+          </Text>
         </View>
       </Page>
     </Document>
@@ -291,12 +302,14 @@ export default function CreateInvoice() {
   const [downloading, setDownloading] = useState(false);
 
   const issuedAt = useMemo(() => new Date().toISOString(), [selectedId, docType]);
-  const dueAt = useMemo(() => addDays(DEFAULT_TERMS_DAYS), [selectedId, docType]);
 
-  // Not yet allocated from the database sequence, so this is a placeholder.
-  // Numbers get assigned on issue, not on preview, so browsing doesn't burn
-  // them and leave unexplainable gaps in the register.
-  const docNumber = `${DOC_TYPES[docType].prefix}-PREVIEW`;
+  // Not yet allocated from a database sequence -- see note in the previous
+  // build. Numbers should only be assigned when the user commits to
+  // issuing, not on every preview.
+  const docNumber = useMemo(() => {
+    const n = detail?.name?.replace(/\D/g, '') || 'PREVIEW';
+    return `${DOC_TYPES[docType].prefix}-${n}`;
+  }, [detail, docType]);
 
   useEffect(() => {
     loadDrafts();
@@ -321,8 +334,6 @@ export default function CreateInvoice() {
     setDetailError(null);
     setDetailLoading(true);
     try {
-      // Re-fetch rather than reuse the list row: drafts stay editable in
-      // Shopify, so the list data may already be stale.
       const res = await callProxy({ action: 'fetch_draft_order', draftOrderId: id });
       setDetail(res.draftOrder);
     } catch (err) {
@@ -335,20 +346,33 @@ export default function CreateInvoice() {
     if (!detail) return;
     setDownloading(true);
     try {
+      const [logoDataUri, lineImages] = await Promise.all([
+        toDataUri(logoUrl).catch(() => null),
+        Promise.all(
+          detail.lines.map((l) => (l.image_url ? toDataUri(l.image_url).catch(() => null) : null))
+        ),
+      ]);
+
+      // QR encodes the plain document number as text, not a link -- it
+      // isn't wired to anything, it's just a scannable reference.
+      const qrDataUri = await QRCode.toDataURL(docNumber, { margin: 1, width: 200 });
+
       const blob = await pdf(
         <InvoicePDF
           draft={detail}
           docType={docType}
           docNumber={docNumber}
           issuedAt={issuedAt}
-          dueAt={dueAt}
+          logoDataUri={logoDataUri}
+          qrDataUri={qrDataUri}
+          lineImages={lineImages}
         />
       ).toBlob();
 
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${docNumber}-${detail.name.replace(/[^\w-]/g, '')}.pdf`;
+      a.download = `${docNumber}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -360,24 +384,20 @@ export default function CreateInvoice() {
   const emailHref = useMemo(() => {
     if (!detail) return '#';
     const cfg = DOC_TYPES[docType];
-    const subject = `${cfg.label} ${docNumber} from ${COMPANY.name}`;
+    const subject = `${cfg.label === 'INVOICE' ? 'Invoice' : cfg.label} ${docNumber} from ${COMPANY.name}`;
     const body = [
       `Hi ${detail.customer_name || 'there'},`,
       '',
-      `Please find attached ${cfg.label.toLowerCase()} ${docNumber} for ${fmtMoney(
+      `Please find attached ${cfg.label === 'INVOICE' ? 'invoice' : 'quote'} ${docNumber} for ${fmtMoney(
         detail.total,
         detail.currency
       )}.`,
-      ...(docType === 'invoice' && detail.invoice_url
-        ? ['', `To pay by card: ${detail.invoice_url}`]
-        : []),
+      ...(docType === 'invoice' && detail.invoice_url ? ['', `To pay by card: ${detail.invoice_url}`] : []),
       '',
       'Thanks,',
       COMPANY.name,
     ].join('\n');
-    return `mailto:${detail.email || ''}?subject=${encodeURIComponent(
-      subject
-    )}&body=${encodeURIComponent(body)}`;
+    return `mailto:${detail.email || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }, [detail, docType, docNumber]);
 
   const visibleDrafts = drafts.filter((d) => {
@@ -392,7 +412,6 @@ export default function CreateInvoice() {
 
   return (
     <div className="space-y-3">
-      {/* Header */}
       <div className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-2xs flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm">
@@ -430,7 +449,6 @@ export default function CreateInvoice() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 items-start">
-        {/* Draft list */}
         <div className="lg:col-span-2 bg-white border border-slate-200/80 rounded-xl shadow-2xs overflow-hidden">
           <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
             <span className="text-[11px] font-bold text-slate-700">
@@ -505,7 +523,6 @@ export default function CreateInvoice() {
           )}
         </div>
 
-        {/* Preview */}
         <div className="lg:col-span-3 bg-white border border-slate-200/80 rounded-xl shadow-2xs">
           {!selectedId && (
             <div className="p-10 text-center text-[11px] text-slate-500">
@@ -514,9 +531,7 @@ export default function CreateInvoice() {
           )}
 
           {detailLoading && (
-            <div className="p-10 text-center text-[11px] text-slate-500">
-              Loading draft order...
-            </div>
+            <div className="p-10 text-center text-[11px] text-slate-500">Loading draft order...</div>
           )}
 
           {detailError && (
@@ -537,7 +552,7 @@ export default function CreateInvoice() {
                         docType === key ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'
                       }`}
                     >
-                      {cfg.label}
+                      {cfg.label === 'INVOICE' ? 'Invoice' : cfg.label}
                     </button>
                   ))}
                 </div>
@@ -562,73 +577,82 @@ export default function CreateInvoice() {
               {detail.lines_needing_sku > 0 && (
                 <div className="mx-3 mt-3 p-2.5 bg-amber-50 border border-amber-200 text-amber-800 text-[11px] rounded-md">
                   {detail.lines_needing_sku} hand-typed line
-                  {detail.lines_needing_sku > 1 ? 's have' : ' has'} no SKU. Fine for an
-                  invoice, but these won't match anything in Cin7 later.
+                  {detail.lines_needing_sku > 1 ? 's have' : ' has'} no SKU. Fine for a
+                  document like this, but won't match anything in Cin7 later.
                 </div>
               )}
 
-              {/* On-screen preview mirrors the PDF layout */}
               <div className="p-5">
                 <div className="border border-slate-200 rounded-lg p-5 text-[11px] text-slate-700">
                   <div className="flex justify-between gap-6 mb-6">
-                    <div>
+                    <img src={logoUrl} alt="" className="h-14 object-contain" />
+                    <div className="text-right text-slate-500 leading-relaxed">
                       <div className="text-sm font-bold text-slate-900">{COMPANY.name}</div>
-                      <div className="text-slate-500 leading-relaxed">
-                        {COMPANY.addressLines.map((l) => (
-                          <div key={l}>{l}</div>
-                        ))}
-                        <div>ABN {COMPANY.abn}</div>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-sm font-bold text-slate-900 mb-1">
-                        {DOC_TYPES[docType].label}
-                      </div>
-                      <div className="text-slate-500">
-                        <div>{docNumber}</div>
-                        <div>Issued {fmtDate(issuedAt)}</div>
-                        {DOC_TYPES[docType].showDue && <div>Due {fmtDate(dueAt)}</div>}
-                        <div>{detail.name}</div>
-                      </div>
+                      <div>ABN: {COMPANY.abn}</div>
+                      {COMPANY.addressLines.map((l) => (
+                        <div key={l}>{l}</div>
+                      ))}
+                      <div>Phone: {COMPANY.phone}</div>
+                      <div>Email: {COMPANY.email}</div>
                     </div>
                   </div>
 
-                  <div className="mb-5">
-                    <div className="font-bold text-slate-900 mb-1">Bill to</div>
-                    <div className="text-slate-500">
+                  <div className="grid grid-cols-3 gap-4 mb-5">
+                    <div>
+                      <div className="text-[9px] tracking-wide text-slate-400 mb-1">INVOICE TO</div>
+                      <div className="font-bold text-slate-900">{detail.customer_name}</div>
                       {(addressLines(detail.billing_address).length
                         ? addressLines(detail.billing_address)
-                        : [detail.customer_name]
+                        : ['—']
                       ).map((l, i) => (
-                        <div key={i}>{l}</div>
+                        <div key={i} className="text-slate-500">{l}</div>
                       ))}
-                      {detail.email && <div>{detail.email}</div>}
+                    </div>
+                    <div>
+                      <div className="text-[9px] tracking-wide text-slate-400 mb-1">SHIP TO</div>
+                      <div className="font-bold text-slate-900">{detail.customer_name}</div>
+                      {(addressLines(detail.shipping_address).length
+                        ? addressLines(detail.shipping_address)
+                        : ['—']
+                      ).map((l, i) => (
+                        <div key={i} className="text-slate-500">{l}</div>
+                      ))}
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xl text-slate-900">
+                        {DOC_TYPES[docType].label === 'INVOICE' ? 'INVOICE' : 'Quote'}
+                      </div>
+                      <div className="text-slate-500">#{docNumber}, {fmtDate(issuedAt)}</div>
                     </div>
                   </div>
 
                   <table className="w-full">
                     <thead>
-                      <tr className="border-b border-slate-800 text-slate-900 font-bold">
-                        <th className="text-left pb-1">Description</th>
-                        <th className="text-left pb-1">SKU</th>
-                        <th className="text-right pb-1">Qty</th>
-                        <th className="text-right pb-1">Unit</th>
-                        <th className="text-right pb-1">Amount</th>
+                      <tr style={{ backgroundColor: '#c2c2c2' }} className="text-white">
+                        <th className="text-left py-1.5 px-2 font-bold w-10"></th>
+                        <th className="text-left py-1.5 px-2 font-bold">PRODUCT</th>
+                        <th className="text-left py-1.5 px-2 font-bold">PRICE</th>
+                        <th className="text-left py-1.5 px-2 font-bold">QTY</th>
+                        <th className="text-right py-1.5 px-2 font-bold">TOTAL</th>
                       </tr>
                     </thead>
                     <tbody>
                       {detail.lines.map((l, i) => (
-                        <tr key={i} className="border-b border-slate-100">
-                          <td className="py-1.5 pr-2">
-                            {l.title}
-                            {l.variant_title ? ` — ${l.variant_title}` : ''}
+                        <tr key={i} className={i % 2 === 1 ? 'bg-slate-50' : ''}>
+                          <td className="py-1.5 px-2">
+                            {l.image_url && (
+                              <img src={l.image_url} alt="" className="w-6 h-6 object-cover rounded" />
+                            )}
                           </td>
-                          <td className="py-1.5 pr-2 text-slate-500">{l.sku || '—'}</td>
-                          <td className="py-1.5 text-right">{l.qty}</td>
-                          <td className="py-1.5 text-right">
-                            {fmtMoney(l.unit_price, detail.currency)}
+                          <td className="py-1.5 px-2">
+                            <div className="font-bold text-slate-900">{l.title}</div>
+                            {l.variant_title && (
+                              <div className="text-slate-400 text-[10px]">{l.variant_title}</div>
+                            )}
                           </td>
-                          <td className="py-1.5 text-right">
+                          <td className="py-1.5 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
+                          <td className="py-1.5 px-2">{l.qty}</td>
+                          <td className="py-1.5 px-2 text-right">
                             {fmtMoney(l.line_total, detail.currency)}
                           </td>
                         </tr>
@@ -636,32 +660,40 @@ export default function CreateInvoice() {
                     </tbody>
                   </table>
 
-                  <div className="mt-4 flex justify-end">
-                    <div className="w-56 space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">
-                          Subtotal {detail.taxes_included ? '(incl. GST)' : '(excl. GST)'}
-                        </span>
+                  <div className="mt-2 flex justify-end">
+                    <div className="w-64">
+                      <div className="flex justify-between py-1.5 border-b border-slate-100">
+                        <span className="text-slate-500">Subtotal</span>
                         <span>{fmtMoney(detail.subtotal, detail.currency)}</span>
                       </div>
-                      {detail.shipping > 0 && (
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Shipping</span>
-                          <span>{fmtMoney(detail.shipping, detail.currency)}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">
-                          GST {detail.taxes_included ? 'included' : ''}
-                        </span>
+                      <div className="flex justify-between py-1.5 border-b border-slate-100">
+                        <span className="text-slate-500">Shipping</span>
+                        <span>{fmtMoney(detail.shipping, detail.currency)}</span>
+                      </div>
+                      <div className="flex justify-between py-1.5 border-b border-slate-100">
+                        <span className="text-slate-500">Tax</span>
                         <span>{fmtMoney(detail.tax, detail.currency)}</span>
                       </div>
-                      <div className="flex justify-between border-t border-slate-800 pt-1.5 font-bold text-slate-900 text-xs">
-                        <span>Total {detail.currency}</span>
+                      <div
+                        className="flex justify-between py-2 px-2 mt-1 font-bold text-white"
+                        style={{ backgroundColor: '#c2c2c2' }}
+                      >
+                        <span>Total</span>
                         <span>{fmtMoney(detail.total, detail.currency)}</span>
                       </div>
                     </div>
                   </div>
+
+                  {docType === 'invoice' && (
+                    <div className="mt-8">
+                      <div className="text-[9px] tracking-wide text-slate-400 mb-1.5">PAYMENT</div>
+                      <div className="text-slate-900">{COMPANY.paymentNote}</div>
+                      <div className="text-slate-500">{COMPANY.bank.accountName}</div>
+                      <div className="text-slate-500">BSB: {COMPANY.bank.bsb}</div>
+                      <div className="text-slate-500">Acc: {COMPANY.bank.account}</div>
+                      <div className="text-slate-500">Ref: {docNumber}</div>
+                    </div>
+                  )}
                 </div>
               </div>
             </>
