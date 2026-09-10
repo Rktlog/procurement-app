@@ -53,13 +53,15 @@ const fmtDate = (d) =>
     year: 'numeric',
   });
 
-const addressLines = (a, customerName) =>
+const addressLines = (a) =>
   !a
     ? []
     : [
-        // Drop the address's own "name" field when it just repeats the
-        // customer name printed above it -- otherwise it shows twice.
-        a.name && a.name !== customerName ? a.name : null,
+        // The recipient's name is already shown as the bold line above
+        // this block, so a.name is never repeated here -- comparing it
+        // against the customer name string was fragile (case, whitespace,
+        // or a company vs. contact name mismatch), and there's no case
+        // where showing it twice is actually useful.
         [a.address1, a.address2].filter(Boolean).join(', '),
         a.city,
         [a.zip, a.countryCodeV2 === 'AU' ? 'Australia' : a.countryCodeV2].filter(Boolean).join(', '),
@@ -125,11 +127,11 @@ const s = StyleSheet.create({
   companyName: { fontSize: 10, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
   companyLine: { color: '#4b5563', lineHeight: 1.5 },
 
-  partiesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 24 },
+  partiesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 32 },
   partyCol: { width: '25%' },
-  partyLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 4 },
-  partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2 },
-  partyLine: { color: '#4b5563', lineHeight: 1.6 },
+  partyLabel: { fontSize: 7.5, letterSpacing: 0.5, color: '#6b7280', marginBottom: 6 },
+  partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 5 },
+  partyLine: { color: '#4b5563', lineHeight: 1.7 },
 
   docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
   qr: { width: 50, height: 50, marginRight: 10, marginTop: 3 },
@@ -148,7 +150,7 @@ const s = StyleSheet.create({
   tRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 11,
+    paddingVertical: 14,
     paddingHorizontal: 8,
     borderBottomWidth: 0.5,
     borderBottomColor: '#e5e7eb',
@@ -156,10 +158,10 @@ const s = StyleSheet.create({
   tRowShaded: { backgroundColor: '#f2f4f6' },
 
   cThumb: { width: '9%' },
-  thumbImg: { width: 32, height: 32, objectFit: 'cover', borderRadius: 3 },
+  thumbImg: { width: 34, height: 34, objectFit: 'cover', borderRadius: 3 },
   cProduct: { width: '46%', paddingRight: 6 },
   productTitle: { color: '#111827', fontFamily: 'Helvetica-Bold', lineHeight: 1.4 },
-  productVariant: { color: '#9ca3af', fontSize: 8, marginTop: 3 },
+  productVariant: { color: '#9ca3af', fontSize: 8, marginTop: 4 },
   cPrice: { width: '15%' },
   cQty: { width: '10%' },
   cTotal: { width: '20%', textAlign: 'right' },
@@ -198,8 +200,8 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUr
   const cfg = DOC_TYPES[docType];
   const cur = draft.currency || 'AUD';
   const totals = getTotals(draft);
-  const billLines = addressLines(draft.billing_address, draft.customer_name);
-  const shipLines = addressLines(draft.shipping_address, draft.customer_name);
+  const billLines = addressLines(draft.billing_address);
+  const shipLines = addressLines(draft.shipping_address);
 
   return (
     <Document title={`${docNumber} ${draft.customer_name}`}>
@@ -634,8 +636,8 @@ export default function CreateInvoice() {
                     <div>
                       <div className="text-[9px] tracking-wide text-slate-400 mb-1">INVOICE TO</div>
                       <div className="font-bold text-slate-900">{detail.customer_name}</div>
-                      {(addressLines(detail.billing_address, detail.customer_name).length
-                        ? addressLines(detail.billing_address, detail.customer_name)
+                      {(addressLines(detail.billing_address).length
+                        ? addressLines(detail.billing_address)
                         : ['—']
                       ).map((l, i) => (
                         <div key={i} className="text-slate-500 leading-relaxed">{l}</div>
@@ -644,8 +646,8 @@ export default function CreateInvoice() {
                     <div>
                       <div className="text-[9px] tracking-wide text-slate-400 mb-1">SHIP TO</div>
                       <div className="font-bold text-slate-900">{detail.customer_name}</div>
-                      {(addressLines(detail.shipping_address, detail.customer_name).length
-                        ? addressLines(detail.shipping_address, detail.customer_name)
+                      {(addressLines(detail.shipping_address).length
+                        ? addressLines(detail.shipping_address)
                         : ['—']
                       ).map((l, i) => (
                         <div key={i} className="text-slate-500 leading-relaxed">{l}</div>
@@ -672,20 +674,20 @@ export default function CreateInvoice() {
                     <tbody>
                       {detail.lines.map((l, i) => (
                         <tr key={i} className={i % 2 === 1 ? 'bg-slate-50' : ''}>
-                          <td className="py-2.5 px-2">
+                          <td className="py-3.5 px-2">
                             {l.image_url && (
                               <img src={l.image_url} alt="" className="w-7 h-7 object-cover rounded" />
                             )}
                           </td>
-                          <td className="py-2.5 px-2">
+                          <td className="py-3.5 px-2">
                             <div className="font-bold text-slate-900">{l.title}</div>
                             {l.variant_title && (
                               <div className="text-slate-400 text-[10px] mt-0.5">{l.variant_title}</div>
                             )}
                           </td>
-                          <td className="py-2.5 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
-                          <td className="py-2.5 px-2">{l.qty}</td>
-                          <td className="py-2.5 px-2 text-right">
+                          <td className="py-3.5 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
+                          <td className="py-3.5 px-2">{l.qty}</td>
+                          <td className="py-3.5 px-2 text-right">
                             {fmtMoney(l.line_total, detail.currency)}
                           </td>
                         </tr>
