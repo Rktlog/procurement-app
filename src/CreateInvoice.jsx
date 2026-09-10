@@ -145,7 +145,7 @@ const s = StyleSheet.create({
   partyCol: { width: '28%' },
   partyLabel: { fontSize: 8, letterSpacing: 0.5, color: '#6b7280', marginBottom: 3 },
   partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2, fontSize: 10 },
-  partyLine: { color: '#4b5563', lineHeight: 0.8, fontSize: 9.5 },
+  partyLine: { color: '#4b5563', lineHeight: 1.05, fontSize: 9.5 },
 
   docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
   qr: { width: 62, height: 62, marginRight: 10 },
@@ -622,14 +622,14 @@ export default function CreateInvoice() {
                       <div className="text-[10px] tracking-wide text-slate-400 mb-1">INVOICE TO</div>
                       <div className="font-bold text-slate-900 text-[13px]">{detail.customer_name}</div>
                       {addressLines(detail.billing_address).map((l, i) => (
-                        <div key={i} className="text-slate-500 leading-tight text-[12px]">{l}</div>
+                        <div key={i} className="text-slate-500 leading-snug text-[12px]">{l}</div>
                       ))}
                     </div>
                     <div>
                       <div className="text-[10px] tracking-wide text-slate-400 mb-1">SHIP TO</div>
                       <div className="font-bold text-slate-900 text-[13px]">{detail.customer_name}</div>
                       {addressLines(detail.shipping_address).map((l, i) => (
-                        <div key={i} className="text-slate-500 leading-tight text-[12px]">{l}</div>
+                        <div key={i} className="text-slate-500 leading-snug text-[12px]">{l}</div>
                       ))}
                     </div>
                     <div className="text-right">
