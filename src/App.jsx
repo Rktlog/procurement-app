@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import ProductSearch from './ProductSearch';
 import UrgentSalesShortage from './UrgentSalesShortage';
@@ -39,17 +39,45 @@ export default function App() {
   const [userApps, setUserApps] = useState([]);
   const [activeApp, setActiveApp] = useState(null);
 
+  // Guards against re-running permission fetch (and wiping activeApp) on
+  // every auth event. Supabase fires onAuthStateChange for far more than
+  // login/logout -- TOKEN_REFRESHED and INITIAL_SESSION also fire when a
+  // backgrounded tab regains focus, which was resetting activeApp to null
+  // mid-session and dropping the user back to the launcher screen.
+  const hasLoadedPermissions = useRef(false);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) fetchUserPermissions();
-      else setLoading(false);
+      if (session) {
+        fetchUserPermissions();
+        hasLoadedPermissions.current = true;
+      } else {
+        setLoading(false);
+      }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
-      if (session) fetchUserPermissions();
-      else setLoading(false);
+
+      if (event === 'SIGNED_OUT') {
+        hasLoadedPermissions.current = false;
+        setActiveApp(null);
+        setLoading(false);
+        return;
+      }
+
+      if (event === 'SIGNED_IN' && !hasLoadedPermissions.current) {
+        // Real, fresh login -- load permissions and let fetchUserPermissions
+        // pick the landing screen.
+        fetchUserPermissions();
+        hasLoadedPermissions.current = true;
+        return;
+      }
+
+      // TOKEN_REFRESHED, INITIAL_SESSION (tab refocus), or a SIGNED_IN we've
+      // already handled: session state above is enough, don't touch
+      // activeApp or re-run the permissions fetch.
     });
 
     return () => subscription.unsubscribe();
@@ -69,9 +97,11 @@ export default function App() {
 
         if (appsList.length === 1 && !masterStatus) {
           setActiveApp(appsList[0]);
-        } else {
-          setActiveApp(null);
         }
+        // else: leave activeApp as-is rather than forcing it to null --
+        // this function now only runs on a genuine fresh login, where
+        // activeApp already starts null, so there's nothing to preserve
+        // there; it just avoids a redundant reset.
       } else {
         // Fail closed, not open: a broken or empty permissions response
         // should not silently grant full access to every app. Previously
