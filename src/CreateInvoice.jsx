@@ -226,10 +226,12 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, lineImag
           {logoDataUri ? <Image src={logoDataUri} style={s.logo} /> : <View style={{ width: 100 }} />}
 
           <View style={s.companyBlock}>
-            <Text style={s.companyName}>{COMPANY.name}</Text>
-            <Text style={s.companyLine}>
-              {[`ABN: ${COMPANY.abn}`, ...COMPANY.addressLines, `Phone: ${COMPANY.phone}`, `Email: ${COMPANY.email}`].join('\n')}
-            </Text>
+            <View style={{ alignItems: 'flex-start' }}>
+              <Text style={s.companyName}>{COMPANY.name}</Text>
+              <Text style={s.companyLine}>
+                {[`ABN: ${COMPANY.abn}`, ...COMPANY.addressLines, `Phone: ${COMPANY.phone}`, `Email: ${COMPANY.email}`].join('\n')}
+              </Text>
+            </View>
           </View>
         </View>
 
