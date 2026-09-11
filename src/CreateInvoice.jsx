@@ -548,6 +548,9 @@ export default function CreateInvoice() {
                       </div>
                       <div className="text-[11px] text-slate-500 truncate">
                         {d.email || 'No email'} · {fmtDate(d.updated_at)}
+                        {d.completed_order_name && (
+                          <span className="text-emerald-600 font-semibold"> · Order {d.completed_order_name}</span>
+                        )}
                       </div>
                     </div>
                     <div className="text-xs font-bold text-slate-900 whitespace-nowrap">
@@ -662,6 +665,11 @@ export default function CreateInvoice() {
                         {DOC_TYPES[docType].label === 'INVOICE' ? 'INVOICE' : 'Quote'}
                       </div>
                       <div className="text-slate-500 text-[12px]">#{docNumber}, {fmtDate(issuedAt)}</div>
+                      {detail.completed_order_name && (
+                        <div className="text-emerald-600 text-[11px] font-semibold mt-0.5">
+                          Shopify order {detail.completed_order_name}
+                        </div>
+                      )}
                     </div>
                   </div>
 
