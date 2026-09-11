@@ -141,7 +141,7 @@ const s = StyleSheet.create({
   // content below (the INVOICE title) had no idea this block existed
   // and started rendering right on top of it. Flex row keeps it visually
   // at the top-right while still reserving its own space properly.
-  companyBlock: { width: '48%', alignItems: 'flex-start', textAlign: 'left' },
+  companyBlock: { width: '48%', alignItems: 'flex-end', textAlign: 'left' },
   companyName: { fontSize: 9.5, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
   companyLine: { color: '#4b5563', lineHeight: 0.8 },
 
