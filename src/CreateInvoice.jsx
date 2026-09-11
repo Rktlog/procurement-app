@@ -134,12 +134,14 @@ async function toDataUriViaProxy(url) {
 const s = StyleSheet.create({
   page: { padding: 30, fontSize: 8.5, color: '#333333', fontFamily: 'Helvetica' },
 
-  headerRow: { marginBottom: 14 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   logo: { width: 100, height: 50, objectFit: 'contain' },
-  // Pinned to the true top-right corner of the page rather than sharing
-  // space in the header flex row, so it sits flush with the page edge
-  // regardless of the logo's width.
-  companyBlock: { position: 'absolute', top: 30, right: 30, width: 220, alignItems: 'flex-start', textAlign: 'left' },
+  // Right side of the header row, not absolutely positioned -- absolute
+  // positioning pulled this out of document flow entirely, so the
+  // content below (the INVOICE title) had no idea this block existed
+  // and started rendering right on top of it. Flex row keeps it visually
+  // at the top-right while still reserving its own space properly.
+  companyBlock: { width: '48%', alignItems: 'flex-start', textAlign: 'left' },
   companyName: { fontSize: 9.5, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
   companyLine: { color: '#4b5563', lineHeight: 0.8 },
 
@@ -149,9 +151,9 @@ const s = StyleSheet.create({
   partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2, fontSize: 10 },
   partyLine: { color: '#4b5563', lineHeight: 1.05, fontSize: 9.5 },
 
-  docBlock: { width: '38%', alignItems: 'flex-end' },
+  docBlock: { width: '38%', alignItems: 'flex-end', justifyContent: 'flex-end' },
   docTitleWrap: { alignItems: 'flex-end' },
-  docTitle: { fontSize: 26, color: '#111827', marginBottom: 3 },
+  docTitle: { fontSize: 26, fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 3 },
   docMeta: { color: '#4b5563', fontSize: 9.5 },
 
   tHead: {
@@ -220,15 +222,15 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, lineImag
   return (
     <Document title={`${docNumber} ${draft.customer_name}`}>
       <Page size="A4" style={s.page}>
-        <View style={s.companyBlock}>
-          <Text style={s.companyName}>{COMPANY.name}</Text>
-          <Text style={s.companyLine}>
-            {[`ABN: ${COMPANY.abn}`, ...COMPANY.addressLines, `Phone: ${COMPANY.phone}`, `Email: ${COMPANY.email}`].join('\n')}
-          </Text>
-        </View>
-
         <View style={s.headerRow}>
           {logoDataUri ? <Image src={logoDataUri} style={s.logo} /> : <View style={{ width: 100 }} />}
+
+          <View style={s.companyBlock}>
+            <Text style={s.companyName}>{COMPANY.name}</Text>
+            <Text style={s.companyLine}>
+              {[`ABN: ${COMPANY.abn}`, ...COMPANY.addressLines, `Phone: ${COMPANY.phone}`, `Email: ${COMPANY.email}`].join('\n')}
+            </Text>
+          </View>
         </View>
 
         <View style={s.partiesRow}>
@@ -349,9 +351,36 @@ export default function CreateInvoice() {
   const issuedAt = useMemo(() => new Date().toISOString(), [selectedId, docType]);
 
   const docNumber = useMemo(() => {
-    const n = detail?.name?.replace(/\D/g, '') || 'PREVIEW';
-    return `${DOC_TYPES[docType].prefix}-${n}`;
+    if (!detail) return `${DOC_TYPES[docType].prefix}-PREVIEW`;
+
+    if (docType === 'quote') {
+      // A quote precedes approval by definition -- it's always the
+      // draft's own number.
+      const n = detail.name?.replace(/\D/g, '') || 'PREVIEW';
+      return `${DOC_TYPES[docType].prefix}-${n}`;
+    }
+
+    // Invoice: once the draft has been approved and converted, Shopify
+    // creates a separate real order with its own number -- that's what
+    // the invoice should reference, not the original draft number.
+    if (detail.completed_order_name) {
+      const n = detail.completed_order_name.replace(/\D/g, '');
+      return `INV-${n}`;
+    }
+
+    // Not completed yet -- no real order number exists. Falling back to
+    // the draft's own number so the screen still works, but this case
+    // is worth a visible flag (see the banner below) since it means
+    // you're invoicing before the order has actually been approved.
+    const n = detail.name?.replace(/\D/g, '') || 'PREVIEW';
+    return `INV-${n}`;
   }, [detail, docType]);
+
+  // True when generating an invoice for a draft that hasn't actually been
+  // approved/completed in Shopify yet -- the invoice number in this case
+  // is a stand-in using the draft's own number, not a real order number.
+  const invoicingBeforeCompletion =
+    detail && docType === 'invoice' && detail.status !== 'COMPLETED' && !detail.completed_order_name;
 
   const previewTotals = useMemo(() => (detail ? getTotals(detail) : null), [detail]);
 
@@ -585,6 +614,16 @@ export default function CreateInvoice() {
                   </button>
                 </div>
               </div>
+
+              {invoicingBeforeCompletion && (
+                <div className="mx-3 mt-3 p-2.5 bg-amber-50 border border-amber-200 text-amber-800 text-[11px] rounded-md">
+                  This draft is still <strong>{detail.status}</strong>, not completed. It hasn't been
+                  approved and converted to a real Shopify order yet, so there's no real order number
+                  to invoice against -- <strong>{docNumber}</strong> is using the draft's own number as
+                  a stand-in. Once it's approved, come back and generate the invoice again to get the
+                  real order number.
+                </div>
+              )}
 
               <div className="p-5">
                 <div className="border border-slate-200 rounded-lg p-5 text-[11px] text-slate-700">
