@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import { Document, Page, Text, View, StyleSheet, pdf, Image } from '@react-pdf/renderer';
-import QRCode from 'qrcode';
 import logoUrl from './assets/project-clothing-logo.png';
 
 // ---------------------------------------------------------------------------
@@ -135,9 +134,12 @@ async function toDataUriViaProxy(url) {
 const s = StyleSheet.create({
   page: { padding: 30, fontSize: 8.5, color: '#333333', fontFamily: 'Helvetica' },
 
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
+  headerRow: { marginBottom: 14 },
   logo: { width: 100, height: 50, objectFit: 'contain' },
-  companyBlock: { width: '48%', alignItems: 'flex-start', textAlign: 'left' },
+  // Pinned to the true top-right corner of the page rather than sharing
+  // space in the header flex row, so it sits flush with the page edge
+  // regardless of the logo's width.
+  companyBlock: { position: 'absolute', top: 30, right: 30, width: 220, alignItems: 'flex-start', textAlign: 'left' },
   companyName: { fontSize: 9.5, fontFamily: 'Helvetica-Bold', marginBottom: 2, color: '#111827' },
   companyLine: { color: '#4b5563', lineHeight: 0.8 },
 
@@ -147,8 +149,7 @@ const s = StyleSheet.create({
   partyName: { fontFamily: 'Helvetica-Bold', color: '#111827', marginBottom: 2, fontSize: 10 },
   partyLine: { color: '#4b5563', lineHeight: 1.05, fontSize: 9.5 },
 
-  docBlock: { width: '38%', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start' },
-  qr: { width: 62, height: 62, marginRight: 10 },
+  docBlock: { width: '38%', alignItems: 'flex-end' },
   docTitleWrap: { alignItems: 'flex-end' },
   docTitle: { fontSize: 26, color: '#111827', marginBottom: 3 },
   docMeta: { color: '#4b5563', fontSize: 9.5 },
@@ -201,15 +202,15 @@ const s = StyleSheet.create({
 
   paymentBlock: { width: '48%' },
   paymentLabel: { fontSize: 7, letterSpacing: 0.5, color: '#6b7280', marginBottom: 3, fontFamily: 'Helvetica-Bold' },
-  paymentNote: { color: '#111827', marginBottom: 2, fontFamily: 'Helvetica-Bold' },
-  paymentLine: { color: '#4b5563', lineHeight: 0.8 },
+  paymentNote: { color: '#111827', marginBottom: 1, fontFamily: 'Helvetica-Bold' },
+  paymentLine: { color: '#4b5563', lineHeight: 0.65 },
 
   footer: { position: 'absolute', bottom: 30, left: 30, right: 30 },
   footerHead: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#111827', letterSpacing: 0.3, marginBottom: 1 },
   footerBody: { color: '#6b7280', lineHeight: 1 },
 });
 
-function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUri, lineImages }) {
+function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, lineImages }) {
   const cfg = DOC_TYPES[docType];
   const cur = draft.currency || 'AUD';
   const totals = getTotals(draft);
@@ -219,15 +220,15 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUr
   return (
     <Document title={`${docNumber} ${draft.customer_name}`}>
       <Page size="A4" style={s.page}>
+        <View style={s.companyBlock}>
+          <Text style={s.companyName}>{COMPANY.name}</Text>
+          <Text style={s.companyLine}>
+            {[`ABN: ${COMPANY.abn}`, ...COMPANY.addressLines, `Phone: ${COMPANY.phone}`, `Email: ${COMPANY.email}`].join('\n')}
+          </Text>
+        </View>
+
         <View style={s.headerRow}>
           {logoDataUri ? <Image src={logoDataUri} style={s.logo} /> : <View style={{ width: 100 }} />}
-
-          <View style={s.companyBlock}>
-            <Text style={s.companyName}>{COMPANY.name}</Text>
-            <Text style={s.companyLine}>
-              {[`ABN: ${COMPANY.abn}`, ...COMPANY.addressLines, `Phone: ${COMPANY.phone}`, `Email: ${COMPANY.email}`].join('\n')}
-            </Text>
-          </View>
         </View>
 
         <View style={s.partiesRow}>
@@ -246,7 +247,6 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, qrDataUr
           </View>
 
           <View style={s.docBlock}>
-            {qrDataUri && <Image src={qrDataUri} style={s.qr} />}
             <View style={s.docTitleWrap}>
               <Text style={s.docTitle}>{cfg.label}</Text>
               <Text style={s.docMeta}>#{docNumber}, {fmtDate(issuedAt)}</Text>
@@ -401,8 +401,6 @@ export default function CreateInvoice() {
         ),
       ]);
 
-      const qrDataUri = await QRCode.toDataURL(docNumber, { margin: 1, width: 200 });
-
       const blob = await pdf(
         <InvoicePDF
           draft={detail}
@@ -410,7 +408,6 @@ export default function CreateInvoice() {
           docNumber={docNumber}
           issuedAt={issuedAt}
           logoDataUri={logoDataUri}
-          qrDataUri={qrDataUri}
           lineImages={lineImages}
         />
       ).toBlob();
@@ -427,24 +424,6 @@ export default function CreateInvoice() {
     setDownloading(false);
   };
 
-  const emailHref = useMemo(() => {
-    if (!detail) return '#';
-    const cfg = DOC_TYPES[docType];
-    const subject = `${cfg.label === 'INVOICE' ? 'Invoice' : cfg.label} ${docNumber} from ${COMPANY.name}`;
-    const body = [
-      `Hi ${detail.customer_name || 'there'},`,
-      '',
-      `Please find attached ${cfg.label === 'INVOICE' ? 'invoice' : 'quote'} ${docNumber} for ${fmtMoney(
-        detail.total,
-        detail.currency
-      )}.`,
-      ...(docType === 'invoice' && detail.invoice_url ? ['', `To pay by card: ${detail.invoice_url}`] : []),
-      '',
-      'Thanks,',
-      COMPANY.name,
-    ].join('\n');
-    return `mailto:${detail.email || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  }, [detail, docType, docNumber]);
 
   const visibleDrafts = drafts.filter((d) => {
     if (!search.trim()) return true;
@@ -492,7 +471,7 @@ export default function CreateInvoice() {
         <div className="lg:col-span-2 bg-white border border-slate-200/80 rounded-xl shadow-2xs overflow-hidden">
           <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
             <span className="text-[11px] font-bold text-slate-700">
-              Open drafts{drafts.length ? ` (${visibleDrafts.length})` : ''}
+              Draft orders{drafts.length ? ` (${visibleDrafts.length})` : ''}
             </span>
           </div>
 
@@ -505,7 +484,7 @@ export default function CreateInvoice() {
 
           {!listError && !listLoading && visibleDrafts.length === 0 && (
             <div className="p-6 text-center text-[11px] text-slate-500">
-              No open draft orders. Create one in Shopify and refresh.
+              No draft orders found. Create one in Shopify and refresh.
             </div>
           )}
 
@@ -522,8 +501,19 @@ export default function CreateInvoice() {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="text-xs font-bold text-slate-900 truncate">
-                        {d.name} · {d.customer_name || 'No customer'}
+                      <div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1.5">
+                        <span>{d.name} · {d.customer_name || 'No customer'}</span>
+                        <span
+                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                            d.status === 'COMPLETED'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : d.status === 'INVOICED'
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {d.status}
+                        </span>
                       </div>
                       <div className="text-[11px] text-slate-500 truncate">
                         {d.email || 'No email'} · {fmtDate(d.updated_at)}
@@ -586,12 +576,6 @@ export default function CreateInvoice() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <a
-                    href={emailHref}
-                    className="text-[11px] font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 rounded-md cursor-pointer"
-                  >
-                    Draft email
-                  </a>
                   <button
                     onClick={downloadPdf}
                     disabled={downloading}
