@@ -336,6 +336,12 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, lineImag
 // ---------------------------------------------------------------------------
 
 export default function CreateInvoice() {
+  // 'draft' or 'all' -- the two list sources now share everything below
+  // this point (detail panel, PDF generation) since fetch_order and
+  // fetch_orders return the same normalized shape as the draft-order
+  // equivalents.
+  const [listMode, setListMode] = useState('draft');
+
   const [drafts, setDrafts] = useState([]);
   const [pageInfo, setPageInfo] = useState(null);
   const [listLoading, setListLoading] = useState(true);
@@ -347,24 +353,31 @@ export default function CreateInvoice() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(null);
 
+  // All Orders is invoice-only, per instruction -- no quote toggle needed
+  // there. docType still exists for the Draft Orders tab, where both
+  // remain relevant (a draft is naturally either quoted or invoiced).
   const [docType, setDocType] = useState('invoice');
   const [downloading, setDownloading] = useState(false);
 
   const issuedAt = useMemo(() => new Date().toISOString(), [selectedId, docType]);
 
-  const docNumber = useMemo(() => {
-    if (!detail) return `${DOC_TYPES[docType].prefix}-PREVIEW`;
+  const effectiveDocType = listMode === 'all' ? 'invoice' : docType;
 
-    if (docType === 'quote') {
+  const docNumber = useMemo(() => {
+    if (!detail) return `${DOC_TYPES[effectiveDocType].prefix}-PREVIEW`;
+
+    if (effectiveDocType === 'quote') {
       // A quote precedes approval by definition -- it's always the
       // draft's own number.
       const n = detail.name?.replace(/\D/g, '') || 'PREVIEW';
-      return `${DOC_TYPES[docType].prefix}-${n}`;
+      return `${DOC_TYPES[effectiveDocType].prefix}-${n}`;
     }
 
     // Invoice: once the draft has been approved and converted, Shopify
     // creates a separate real order with its own number -- that's what
-    // the invoice should reference, not the original draft number.
+    // the invoice should reference, not the original draft number. A
+    // real order (All Orders tab) already IS that number, so this falls
+    // through to using detail.name directly in that case too.
     if (detail.completed_order_name) {
       const n = detail.completed_order_name.replace(/\D/g, '');
       return `INV-${n}`;
@@ -374,21 +387,40 @@ export default function CreateInvoice() {
     // the draft's own number so the screen still works, but this case
     // is worth a visible flag (see the banner below) since it means
     // you're invoicing before the order has actually been approved.
+    // Never happens on the All Orders tab, since a real order's name IS
+    // already the real number.
     const n = detail.name?.replace(/\D/g, '') || 'PREVIEW';
     return `INV-${n}`;
-  }, [detail, docType]);
+  }, [detail, effectiveDocType]);
 
   // True when generating an invoice for a draft that hasn't actually been
   // approved/completed in Shopify yet -- the invoice number in this case
   // is a stand-in using the draft's own number, not a real order number.
+  // Can only happen on the Draft Orders tab -- a real order (All Orders)
+  // is by definition already completed.
   const invoicingBeforeCompletion =
-    detail && docType === 'invoice' && detail.status !== 'COMPLETED' && !detail.completed_order_name;
+    listMode === 'draft' &&
+    detail &&
+    effectiveDocType === 'invoice' &&
+    detail.status !== 'COMPLETED' &&
+    !detail.completed_order_name;
 
   const previewTotals = useMemo(() => (detail ? getTotals(detail) : null), [detail]);
 
   useEffect(() => {
-    loadDrafts();
-  }, []);
+    // Switching tabs starts fresh -- a selection from one list shouldn't
+    // linger as though it belonged to the other.
+    setSelectedId(null);
+    setDetail(null);
+    setDetailError(null);
+    setSearch('');
+    if (listMode === 'draft') {
+      loadDrafts();
+    } else {
+      loadOrders();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listMode]);
 
   const loadDrafts = async (cursor = null) => {
     setListLoading(true);
@@ -403,14 +435,42 @@ export default function CreateInvoice() {
     setListLoading(false);
   };
 
+  // Server-side search against Shopify's own query syntax, not a
+  // client-side filter -- with potentially years of real orders, only
+  // filtering what's already paginated into the browser would miss
+  // anything not yet loaded. Debounced so it doesn't fire on every
+  // keystroke.
+  const loadOrders = async (cursor = null, query = search) => {
+    setListLoading(true);
+    setListError(null);
+    try {
+      const res = await callProxy({ action: 'fetch_orders', cursor, searchQuery: query || null });
+      setDrafts((prev) => (cursor ? [...prev, ...res.orders] : res.orders));
+      setPageInfo(res.pageInfo);
+    } catch (err) {
+      setListError(err.message);
+    }
+    setListLoading(false);
+  };
+
+  useEffect(() => {
+    if (listMode !== 'all') return;
+    const handle = setTimeout(() => loadOrders(null, search), 400);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, listMode]);
+
   const openDraft = async (id) => {
     setSelectedId(id);
     setDetail(null);
     setDetailError(null);
     setDetailLoading(true);
     try {
-      const res = await callProxy({ action: 'fetch_draft_order', draftOrderId: id });
-      setDetail(res.draftOrder);
+      const res =
+        listMode === 'draft'
+          ? await callProxy({ action: 'fetch_draft_order', draftOrderId: id })
+          : await callProxy({ action: 'fetch_order', orderId: id });
+      setDetail(listMode === 'draft' ? res.draftOrder : res.order);
     } catch (err) {
       setDetailError(err.message);
     }
@@ -435,7 +495,7 @@ export default function CreateInvoice() {
       const blob = await pdf(
         <InvoicePDF
           draft={detail}
-          docType={docType}
+          docType={effectiveDocType}
           docNumber={docNumber}
           issuedAt={issuedAt}
           logoDataUri={logoDataUri}
@@ -455,16 +515,22 @@ export default function CreateInvoice() {
     setDownloading(false);
   };
 
-
-  const visibleDrafts = drafts.filter((d) => {
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return (
-      d.name?.toLowerCase().includes(q) ||
-      d.customer_name?.toLowerCase().includes(q) ||
-      d.email?.toLowerCase().includes(q)
-    );
-  });
+  // Draft Orders tab keeps the existing client-side filter (small, fully
+  // loaded list). All Orders tab searches server-side instead (see
+  // loadOrders above) -- so here it just shows whatever the server
+  // already returned, unfiltered again.
+  const visibleDrafts =
+    listMode === 'draft'
+      ? drafts.filter((d) => {
+          if (!search.trim()) return true;
+          const q = search.toLowerCase();
+          return (
+            d.name?.toLowerCase().includes(q) ||
+            d.customer_name?.toLowerCase().includes(q) ||
+            d.email?.toLowerCase().includes(q)
+          );
+        })
+      : drafts;
 
   return (
     <div className="space-y-3">
@@ -474,26 +540,49 @@ export default function CreateInvoice() {
             🧾
           </div>
           <div>
-            <h3 className="text-xs font-bold text-slate-900 leading-tight">Create invoice</h3>
+            <h3 className="text-xs font-bold text-slate-900 leading-tight">
+              {listMode === 'draft' ? 'Create invoice' : 'All orders'}
+            </h3>
             <p className="text-[11px] text-slate-500">
-              Build a tax invoice or quotation from a Shopify draft order
+              {listMode === 'draft'
+                ? 'Build a tax invoice or quotation from a Shopify draft order'
+                : 'Reprint or build an invoice for any Shopify order'}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+            <button
+              onClick={() => setListMode('draft')}
+              className={`px-3 py-1 text-[11px] font-bold rounded cursor-pointer ${
+                listMode === 'draft' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              Draft Orders
+            </button>
+            <button
+              onClick={() => setListMode('all')}
+              className={`px-3 py-1 text-[11px] font-bold rounded cursor-pointer ${
+                listMode === 'all' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              All Orders
+            </button>
+          </div>
+
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter by order, name or email"
+            placeholder={listMode === 'draft' ? 'Filter by order, name or email' : 'Search order #, name or email'}
             className="text-[11px] bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5 w-56 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white"
           />
           <button
-            onClick={() => loadDrafts()}
+            onClick={() => (listMode === 'draft' ? loadDrafts() : loadOrders(null, search))}
             disabled={listLoading}
             className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-4 py-2 rounded-lg cursor-pointer disabled:opacity-50 h-8 flex items-center gap-1.5"
           >
-            {listLoading ? 'Loading...' : 'Refresh drafts'}
+            {listLoading ? 'Loading...' : listMode === 'draft' ? 'Refresh drafts' : 'Refresh orders'}
           </button>
         </div>
       </div>
@@ -502,20 +591,25 @@ export default function CreateInvoice() {
         <div className="lg:col-span-2 bg-white border border-slate-200/80 rounded-xl shadow-2xs overflow-hidden">
           <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
             <span className="text-[11px] font-bold text-slate-700">
-              Draft orders{drafts.length ? ` (${visibleDrafts.length})` : ''}
+              {listMode === 'draft' ? 'Draft orders' : 'Orders'}
+              {drafts.length ? ` (${visibleDrafts.length})` : ''}
             </span>
           </div>
 
           {listError && (
             <div className="m-3 p-2.5 bg-red-50 border border-red-200 text-red-700 text-[11px] rounded-md">
-              <div className="font-bold mb-0.5">Couldn't load draft orders</div>
+              <div className="font-bold mb-0.5">Couldn't load {listMode === 'draft' ? 'draft orders' : 'orders'}</div>
               {listError}
             </div>
           )}
 
           {!listError && !listLoading && visibleDrafts.length === 0 && (
             <div className="p-6 text-center text-[11px] text-slate-500">
-              No draft orders found. Create one in Shopify and refresh.
+              {listMode === 'draft'
+                ? 'No draft orders found. Create one in Shopify and refresh.'
+                : search.trim()
+                ? 'No orders match that search.'
+                : 'No orders found.'}
             </div>
           )}
 
@@ -536,9 +630,9 @@ export default function CreateInvoice() {
                         <span>{d.name} · {d.customer_name || 'No customer'}</span>
                         <span
                           className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                            d.status === 'COMPLETED'
+                            d.status === 'COMPLETED' || d.status === 'FULFILLED'
                               ? 'bg-emerald-100 text-emerald-700'
-                              : d.status === 'INVOICED'
+                              : d.status === 'INVOICED' || d.status === 'PARTIALLY_FULFILLED'
                               ? 'bg-amber-100 text-amber-700'
                               : 'bg-slate-100 text-slate-600'
                           }`}
@@ -565,7 +659,9 @@ export default function CreateInvoice() {
           {pageInfo?.hasNextPage && (
             <div className="p-2 border-t border-slate-100">
               <button
-                onClick={() => loadDrafts(pageInfo.endCursor)}
+                onClick={() =>
+                  listMode === 'draft' ? loadDrafts(pageInfo.endCursor) : loadOrders(pageInfo.endCursor, search)
+                }
                 disabled={listLoading}
                 className="w-full text-[11px] font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md py-1.5 cursor-pointer disabled:opacity-50"
               >
@@ -578,12 +674,12 @@ export default function CreateInvoice() {
         <div className="lg:col-span-3 bg-white border border-slate-200/80 rounded-xl shadow-2xs">
           {!selectedId && (
             <div className="p-10 text-center text-[11px] text-slate-500">
-              Pick a draft order to build a document from it.
+              Pick an order to build a document from it.
             </div>
           )}
 
           {detailLoading && (
-            <div className="p-10 text-center text-[11px] text-slate-500">Loading draft order...</div>
+            <div className="p-10 text-center text-[11px] text-slate-500">Loading order...</div>
           )}
 
           {detailError && (
@@ -595,19 +691,27 @@ export default function CreateInvoice() {
           {detail && !detailLoading && (
             <>
               <div className="px-3 py-2 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                  {Object.entries(DOC_TYPES).map(([key, cfg]) => (
-                    <button
-                      key={key}
-                      onClick={() => setDocType(key)}
-                      className={`px-3 py-1 text-[11px] font-bold rounded cursor-pointer ${
-                        docType === key ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      {cfg.label === 'INVOICE' ? 'Invoice' : cfg.label}
-                    </button>
-                  ))}
-                </div>
+                {listMode === 'draft' ? (
+                  <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+                    {Object.entries(DOC_TYPES).map(([key, cfg]) => (
+                      <button
+                        key={key}
+                        onClick={() => setDocType(key)}
+                        className={`px-3 py-1 text-[11px] font-bold rounded cursor-pointer ${
+                          docType === key ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {cfg.label === 'INVOICE' ? 'Invoice' : cfg.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  // All Orders is invoice-only -- no quote toggle, per
+                  // instruction. A plain label keeps the header layout
+                  // consistent with the Draft Orders tab instead of
+                  // leaving an empty gap.
+                  <div className="px-3 py-1 text-[11px] font-bold text-slate-700">Invoice</div>
+                )}
 
                 <div className="flex items-center gap-2">
                   <button
@@ -662,7 +766,7 @@ export default function CreateInvoice() {
                     </div>
                     <div className="text-right">
                       <div className="text-2xl font-bold text-slate-900">
-                        {DOC_TYPES[docType].label === 'INVOICE' ? 'INVOICE' : 'Quote'}
+                        {DOC_TYPES[effectiveDocType].label === 'INVOICE' ? 'INVOICE' : 'Quote'}
                       </div>
                       <div className="text-slate-500 text-[12px]">#{docNumber}, {fmtDate(issuedAt)}</div>
                       {detail.completed_order_name && (
@@ -708,7 +812,7 @@ export default function CreateInvoice() {
                   </table>
 
                   <div className="mt-3 flex justify-between items-start">
-                    {docType === 'invoice' ? (
+                    {effectiveDocType === 'invoice' ? (
                       <div className="w-56 leading-tight">
                         <div className="text-[9px] tracking-wide text-slate-400 mb-1">PAYMENT</div>
                         <div className="text-slate-900 font-bold">{COMPANY.paymentNote}</div>
