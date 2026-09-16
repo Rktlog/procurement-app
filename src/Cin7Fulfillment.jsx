@@ -4,7 +4,7 @@ import AusPostValidateTab from './Auspostvalidatetab';
 import AusPostManifestTab from './Auspostmanifesttab';
 import AusPostSavedManifestsTab from './Auspostsavedmanifeststab';
 import AusPostTrackingTab from './Ausposttrackingtab';
-import { INTL_PRODUCT_ID } from './Auspostconstants';
+import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
 
 const DIM_PRESETS = {
   '20 x 25 x 5 (Default)': { length: 20.0, width: 25.0, height: 5.0 },
@@ -28,6 +28,12 @@ export default function Cin7Fulfillment() {
   const [msg, setMsg] = useState(null);
 
   const [defaultService, setDefaultService] = useState('3D55');
+
+  // Shared between Tab 2 (creates shipments/labels) and Tab 3 (books
+  // manifests, deletes, re-downloads labels) -- lifted up here rather
+  // than living inside one tab, since both genuinely need to read and
+  // write the same per-order process state now.
+  const [processState, setProcessState] = useState({});
 
   useEffect(() => {
     // No setInterval here anymore. Freshness is owned by a pg_cron job
@@ -349,6 +355,300 @@ export default function Cin7Fulfillment() {
     saveQueueToDb(updatedQueue);
   };
 
+  // ===========================================================
+  // Shared AusPost process state + handlers (Tab 2 + Tab 3)
+  // ===========================================================
+  const getProcessState = (orderNumber) => processState[orderNumber] || {};
+  const updateProcessState = (orderNumber, patch) => {
+    setProcessState((prev) => ({ ...prev, [orderNumber]: { ...(prev[orderNumber] || {}), ...patch } }));
+  };
+
+  const callAusPostAction = async (body) => {
+    const { data, error } = await supabase.functions.invoke('cin7-proxy', { body });
+    if (error) throw error;
+    if (!data.success) {
+      const err = new Error(data.error);
+      err.raw = data.raw;
+      throw err;
+    }
+    return data;
+  };
+
+  // Forces a genuine browser download rather than just opening the PDF
+  // in a new tab -- fetches the bytes and triggers an anchor click,
+  // same pattern already used elsewhere in this codebase (CreateInvoice.jsx).
+  const downloadFileFromUrl = async (url, filename) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch file for download (HTTP ${res.status})`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  // Builds a properly AusPost-safe "to" address -- name/business_name
+  // truncated to the real confirmed 40-character limit, full address
+  // broken across up to 3 lines respecting each line's own limit
+  // (40/60/60), rather than sending raw untruncated DEAR data that
+  // AusPost's API would silently cut off or reject.
+  const buildSafeToAddress = (order, isInternational) => {
+    const addr = order.ShippingAddress || order.rawAddress || {};
+    const fullAddressText = [addr.Line1, addr.Line2, addr.Line3].filter(Boolean).join(' ');
+    const lines = buildAddressLines(fullAddressText);
+
+    return {
+      name: truncateField(order.Customer || order.customer || 'Customer'),
+      business_name: addr.Company ? truncateField(addr.Company) : undefined,
+      lines: lines.length ? lines : [truncateField(fullAddressText)],
+      suburb: addr.City || '',
+      state: addr.State || '',
+      postcode: addr.Postcode || '',
+      phone: order.Phone || order.phone || '',
+      email: order.Email || order.email || '',
+      ...(isInternational ? { country: normaliseCountryCode(addr.Country) } : {}),
+    };
+  };
+
+  // Tab 2's "Create Label" action: creates the AusPost shipment, then
+  // immediately creates its label (A6), then forces a real download of
+  // the label PDF. Only processes entries that don't already have a
+  // shipment -- safe to re-run on a partially-completed batch. Once
+  // done, the order naturally appears in Tab 3 (same csvQueue +
+  // processState, nothing further needs to happen for it to "move"
+  // there).
+  const handleCreateShipmentAndLabel = async (entries) => {
+    for (const entry of entries) {
+      const order = entry.order_data;
+      const orderNumber = order.OrderNumber || order.orderName;
+      if (getProcessState(orderNumber).shipmentId) continue;
+
+      updateProcessState(orderNumber, { stage: 'creating_shipment', error: null });
+      try {
+        const isInternational = entry.service === INTL_PRODUCT_ID;
+        const toAddress = buildSafeToAddress(order, isInternational);
+
+        const shipData = await callAusPostAction({
+          action: 'create_auspost_shipment',
+          auspostShipments: [
+            {
+              shipment_reference: orderNumber,
+              from: SENDER_ADDRESS,
+              to: toAddress,
+              items: [
+                {
+                  item_reference: orderNumber,
+                  product_id: entry.service,
+                  length: String(entry.length),
+                  width: String(entry.width),
+                  height: String(entry.height),
+                  weight: String(entry.weight),
+                },
+              ],
+            },
+          ],
+        });
+
+        const shipment = shipData.result?.shipments?.[0];
+        const shipmentId = shipment?.shipment_id || null;
+        const trackingNumber = shipment?.items?.[0]?.tracking_details?.article_id || null;
+        updateProcessState(orderNumber, { stage: 'shipment_created', shipmentId, trackingNumber, error: null });
+
+        if (!shipmentId) continue;
+
+        updateProcessState(orderNumber, { stage: 'creating_label' });
+        const labelData = await callAusPostAction({
+          action: 'create_auspost_label',
+          auspostShipmentIds: [shipmentId],
+          labelGroup: isInternational ? 'International' : (entry.service === '3J55' ? 'Express Post' : 'Parcel Post'),
+          // A6, per spec -- confirmed valid layout value via AusPost's
+          // real documentation (A4-1pp, A4-3pp, A4-4pp, A6-1pp).
+          labelLayout: LABEL_LAYOUT_A6,
+        });
+        const label = labelData.result?.labels?.[0];
+        updateProcessState(orderNumber, { stage: 'label_created', labelRequestId: label?.request_id || null, labelUrl: label?.url || null, error: null });
+
+        if (label?.url) {
+          try {
+            await downloadFileFromUrl(label.url, `${orderNumber}_label.pdf`);
+          } catch (downloadErr) {
+            updateProcessState(orderNumber, { error: `Label created but download failed: ${downloadErr.message}` });
+          }
+        }
+      } catch (err) {
+        updateProcessState(orderNumber, { stage: 'error', error: err.message });
+      }
+    }
+  };
+
+  // Tab 3's re-download -- for a shipment not yet booked into a
+  // manifest, the label URL from creation may have expired, so this
+  // re-fetches a fresh one from AusPost directly via the stored
+  // request_id (the Get Label action), rather than assuming the
+  // original URL is still valid.
+  const handleRedownloadLabel = async (entry) => {
+    const order = entry.order_data;
+    const orderNumber = order.OrderNumber || order.orderName;
+    const s = getProcessState(orderNumber);
+    if (!s.labelRequestId) return;
+    try {
+      const data = await callAusPostAction({ action: 'get_auspost_label', auspostRequestId: s.labelRequestId });
+      const url = data.result?.url || data.result?.labels?.[0]?.url;
+      if (!url) throw new Error('No label URL returned.');
+      await downloadFileFromUrl(url, `${orderNumber}_label.pdf`);
+    } catch (err) {
+      setMsg({ type: 'error', text: `Couldn't re-download label for ${orderNumber}: ${err.message}` });
+    }
+  };
+
+  // Tab 3's "Delete Shipment": deletes the real AusPost shipment
+  // (removes the label with it -- AusPost has no separate "delete
+  // label" call, deleting the shipment is what clears both), then
+  // clears local process state, then removes the order from csvQueue
+  // entirely -- which is what makes it reappear in Tab 1, since Tab 1
+  // filters out anything currently queued.
+  const handleDeleteShipment = async (entries) => {
+    for (const entry of entries) {
+      const order = entry.order_data;
+      const orderNumber = order.OrderNumber || order.orderName;
+      const s = getProcessState(orderNumber);
+      if (!s.shipmentId) continue;
+
+      try {
+        await callAusPostAction({ action: 'delete_auspost_shipment', auspostShipmentIds: [s.shipmentId] });
+        setProcessState((prev) => {
+          const next = { ...prev };
+          delete next[orderNumber];
+          return next;
+        });
+        const idx = csvQueue.findIndex((e) => (e.order_data.OrderNumber || e.order_data.orderName) === orderNumber);
+        if (idx !== -1) await handleRemoveFromQueue(idx);
+      } catch (err) {
+        setMsg({ type: 'error', text: `Couldn't delete shipment for ${orderNumber}: ${err.message}` });
+      }
+    }
+  };
+
+  // Tab 3's "Create Manifest": books the manifest (seals every ready
+  // shipment into one real AusPost order), downloads the real order
+  // summary PDF (A4 -- this is simply what that endpoint returns, no
+  // separate size parameter exists for it), then updates DEAR for each
+  // shipment via fulfill_sale, then removes completed entries from the
+  // active batch -- their job here is done, Tab 4 holds the permanent
+  // record from this point on.
+  const handleCreateManifestAndComplete = async (entries, orderReference) => {
+    const readyEntries = entries.filter((entry) => {
+      const orderNumber = entry.order_data.OrderNumber || entry.order_data.orderName;
+      const s = getProcessState(orderNumber);
+      return s.shipmentId && s.labelRequestId && !s.orderId;
+    });
+    if (readyEntries.length === 0) return;
+
+    try {
+      const shipmentIds = readyEntries.map((entry) => {
+        const orderNumber = entry.order_data.OrderNumber || entry.order_data.orderName;
+        return getProcessState(orderNumber).shipmentId;
+      });
+      const labelRequestIds = {};
+      const labelUrls = {};
+      readyEntries.forEach((entry) => {
+        const orderNumber = entry.order_data.OrderNumber || entry.order_data.orderName;
+        const s = getProcessState(orderNumber);
+        labelRequestIds[s.shipmentId] = s.labelRequestId;
+        labelUrls[s.shipmentId] = s.labelUrl;
+      });
+
+      const orderData = await callAusPostAction({
+        action: 'create_auspost_order',
+        auspostShipmentIds: shipmentIds,
+        auspostOrderReference: orderReference,
+        auspostLabelRequestIds: labelRequestIds,
+        auspostLabelUrls: labelUrls,
+      });
+      const orderId = orderData.result?.order?.order_id || null;
+
+      readyEntries.forEach((entry) => {
+        const orderNumber = entry.order_data.OrderNumber || entry.order_data.orderName;
+        updateProcessState(orderNumber, { stage: 'booked', orderId, error: null });
+      });
+
+      // Real order summary PDF (A4) -- confirmed real endpoint, tested
+      // earlier tonight.
+      if (orderId) {
+        try {
+          const summaryData = await callAusPostAction({ action: 'get_auspost_order_summary', auspostOrderId: orderId });
+          if (summaryData.pdfBase64) {
+            const byteChars = atob(summaryData.pdfBase64);
+            const byteNumbers = new Array(byteChars.length);
+            for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+            const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'application/pdf' });
+            const objectUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = objectUrl;
+            a.download = `manifest_${orderId}.pdf`;
+            a.click();
+            URL.revokeObjectURL(objectUrl);
+          }
+        } catch (summaryErr) {
+          setMsg({ type: 'error', text: `Manifest booked, but couldn't download the summary PDF: ${summaryErr.message}` });
+        }
+      }
+
+      // Update DEAR for each shipment, matching the exact same
+      // fulfill_sale shape already proven in the original CSV/Import
+      // Tracking flow.
+      const loggingFailures = [];
+      for (const entry of readyEntries) {
+        const order = entry.order_data;
+        const orderNumber = order.OrderNumber || order.orderName;
+        const s = getProcessState(orderNumber);
+        try {
+          const { data, error } = await supabase.functions.invoke('cin7-proxy', {
+            body: {
+              action: 'fulfill_sale',
+              saleId: order.ID || order.saleId,
+              orderNumber,
+              trackingNumber: s.trackingNumber,
+              trackingUrl: `https://auspost.com.au/mypost/track/#/details/${s.trackingNumber}`,
+              carrier: 'Australia Post',
+            },
+          });
+          if (error) throw error;
+          if (!data?.success) throw new Error(data?.error || 'Unknown error');
+          updateProcessState(orderNumber, { stage: 'complete', dearUpdated: true, error: null });
+        } catch (err) {
+          loggingFailures.push(orderNumber);
+          updateProcessState(orderNumber, { stage: 'error', error: `DEAR update failed: ${err.message}` });
+        }
+      }
+
+      // Remove fully-completed entries from the active batch -- their
+      // job here is done. Anything that failed the DEAR step stays in
+      // the queue so it's not silently lost.
+      const completedNumbers = readyEntries
+        .map((entry) => entry.order_data.OrderNumber || entry.order_data.orderName)
+        .filter((n) => !loggingFailures.includes(n));
+      const remainingQueue = csvQueue.filter(
+        (e) => !completedNumbers.includes(e.order_data.OrderNumber || e.order_data.orderName)
+      );
+      await saveQueueToDb(remainingQueue);
+
+      setMsg({
+        type: loggingFailures.length ? 'error' : 'success',
+        text: loggingFailures.length
+          ? `Manifest booked, but DEAR update failed for: ${loggingFailures.join(', ')}.`
+          : `Manifest booked and DEAR updated for ${completedNumbers.length} order(s).`,
+      });
+    } catch (err) {
+      readyEntries.forEach((entry) => {
+        const orderNumber = entry.order_data.OrderNumber || entry.order_data.orderName;
+        updateProcessState(orderNumber, { stage: 'error', error: `Manifest booking failed: ${err.message}` });
+      });
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Top Settings Bar */}
@@ -591,12 +891,23 @@ export default function Cin7Fulfillment() {
 
       {/* TAB 2: VALIDATE & PRICE */}
       {activeTab === 'validate' && (
-        <AusPostValidateTab csvQueue={csvQueue} onUpdateQueueItem={handleUpdateQueueItem} />
+        <AusPostValidateTab
+          csvQueue={csvQueue}
+          onUpdateQueueItem={handleUpdateQueueItem}
+          processState={processState}
+          onCreateShipmentAndLabel={handleCreateShipmentAndLabel}
+        />
       )}
 
       {/* TAB 3: CREATE LABEL & BOOK MANIFEST */}
       {activeTab === 'manifest' && (
-        <AusPostManifestTab csvQueue={csvQueue} />
+        <AusPostManifestTab
+          csvQueue={csvQueue}
+          processState={processState}
+          onRedownloadLabel={handleRedownloadLabel}
+          onDeleteShipment={handleDeleteShipment}
+          onCreateManifestAndComplete={handleCreateManifestAndComplete}
+        />
       )}
 
       {/* TAB 4: SAVED MANIFESTS */}
