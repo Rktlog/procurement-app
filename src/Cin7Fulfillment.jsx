@@ -1,45 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
-import AusPostValidateTab from './Auspostvalidatetab';
-import AusPostManifestTab from './Auspostmanifesttab';
-import AusPostSavedManifestsTab from './Auspostsavedmanifeststab';
-import AusPostTrackingTab from './Ausposttrackingtab';
-import { normaliseCountryCode, INTL_SENDER_BUSINESS, INTL_SENDER_EMAIL, INTL_PRODUCT_ID, INTL_REASON_FOR_EXPORT, INTL_ITEM_ORIGIN, INTL_ITEM_DESCRIPTION, INTL_ITEM_HS_CODE } from './auspostConstants';
-
-const AUSPOST_CSV_COLUMNS = [
-  'Row type', 'Sender account', 'Payer account', 'Recipient contact name',
-  'Recipient business name', 'Recipient address line 1', 'Recipient address line 2',
-  'Recipient address line 3', 'Recipient suburb', 'Recipient state',
-  'Recipient postcode', 'Send tracking email to recipient', 'Recipient email address',
-  'Recipient phone number', 'Delivery/special instruction 1', 'Special instruction 2',
-  'Special instruction 3', 'Sender reference 1 ', 'Sender reference 2', 'Product id',
-  'Authority to leave', 'Safe drop ', 'Quantity', 'Packaging type', 'Weight',
-  'Length', 'Width', 'Height', 'Parcel contents', 'Transit cover value',
-  'Deliver wine to addressee only', 'Schedule 8 or medicinal cannabis'
-];
-
-// AusPost International Parcel Send template -- exact 55 columns, verbatim
-// (including trailing spaces on some headers, which the real template has).
-// Confirmed against a working implementation already used for this account.
-const AUSPOST_INTL_COLUMNS = [
-  'Row type', 'Sender account', 'Payer account', 'Sender business name',
-  'Sender email address', 'Sender phone number', 'Recipient contact name',
-  'Recipient business name', 'Recipient country / region',
-  'Recipient address line 1', 'Recipient address line 2', 'Recipient address line 3',
-  'Recipient suburb', 'Recipient state', 'Recipient postcode ',
-  'Send tracking email to recipient', 'Recipient email address',
-  'Recipient phone number', 'Delivery/special instruction 1', 'Special instruction 2',
-  'Special instruction 3', 'Sender reference 1 ', 'Sender reference 2', 'Product id',
-  'Authority to leave', 'Safe drop ', 'Quantity', 'Packaging type', 'Weight',
-  'Length', 'Width', 'Height', 'Parcel contents', 'Transit cover value',
-  'Senders customs reference', 'Comments', 'Landed costs payer',
-  "Importer's reference number", 'Licence number', 'Certificate number',
-  'Invoice number', 'Digital declaration', 'Commercial value', 'Reason for export',
-  'Other reason for export', 'Export declaration number', 'Non-delivery preference',
-  'Item - Quantity', 'Item - Unit weight', 'Item - Individual unit value (AUD)',
-  'Item - Description', 'Item - Origin', 'Item - HS tariff code',
-  'Deliver wine to addressee only', 'Schedule 8 or medicinal cannabis',
-];
+import AusPostValidateTab from './AusPostValidateTab';
+import AusPostManifestTab from './AusPostManifestTab';
+import AusPostSavedManifestsTab from './AusPostSavedManifestsTab';
+import AusPostTrackingTab from './AusPostTrackingTab';
+import { INTL_PRODUCT_ID } from './auspostConstants';
 
 const DIM_PRESETS = {
   '20 x 25 x 5 (Default)': { length: 20.0, width: 25.0, height: 5.0 },
@@ -49,47 +14,6 @@ const DIM_PRESETS = {
   'Custom / Manual': null,
 };
 
-// Escapes a CSV field: wraps in quotes, doubles any embedded quotes, and
-// neutralises formula injection by prefixing a leading apostrophe on any
-// value that starts with =, +, -, or @ (Excel/Sheets would otherwise try
-// to evaluate it -- a real risk here since customer names/addresses come
-// from DEAR sale data, not from us).
-function csvSafe(val, isPhoneField = false) {
-  let s = val === undefined || val === null ? '' : String(val);
-
-  // Neutralise formula injection first -- a leading =, +, -, or @ would
-  // otherwise be evaluated as a formula by Excel/Sheets. This alone
-  // doesn't require quoting under CSV rules, so it's separate from the
-  // quoting decision below.
-  //
-  // Skipped for phone number fields specifically: an international AU
-  // number starts with "+61", which triggered this guard and wrote a
-  // literal apostrophe character into the actual phone number data
-  // ('+61412345678) -- not a hidden Excel-only marker, a real character
-  // sitting in the field. AusPost's importer is not Excel and doesn't
-  // strip that apostrophe the way Excel would when opening the file;
-  // we already found once tonight that it parses differently from
-  // Excel (the earlier blanket-quoting issue). A phone number is data,
-  // not something a person opens as a spreadsheet formula, so the
-  // formula-injection risk this guard protects against doesn't apply
-  // here, and skipping it avoids corrupting every "+"-prefixed number.
-  if (!isPhoneField && /^[=+\-@]/.test(s)) s = "'" + s;
-
-  // Quote only when actually necessary (contains a comma, a quote
-  // character, or a newline) -- matching AusPost's own official
-  // template, which uses plain unquoted headers and mostly-unquoted
-  // data. Blanket-quoting every field (including the header row) was
-  // silently breaking AusPost's bulk importer: it doesn't recognise
-  // quoted header names as matching its expected column names, so the
-  // whole file got rejected even though the data itself was fine. This
-  // is "minimal quoting" (RFC 4180's QUOTE_MINIMAL convention), not a
-  // loosening of the earlier CSV-injection protection -- that guard
-  // above still applies regardless of whether the field ends up quoted.
-  const needsQuoting = /[",\n\r]/.test(s);
-  if (needsQuoting) s = s.replace(/"/g, '""');
-  return needsQuoting ? `"${s}"` : s;
-}
-
 export default function Cin7Fulfillment() {
   const [activeTab, setActiveTab] = useState('select');
   const [expandedSaleIds, setExpandedSaleIds] = useState(new Set());
@@ -97,19 +21,13 @@ export default function Cin7Fulfillment() {
   const [hiddenCount, setHiddenCount] = useState(0);
   const [selectedSaleIds, setSelectedSaleIds] = useState([]);
   const [csvQueue, setCsvQueue] = useState([]);
-  const [selectedExportIndices, setSelectedExportIndices] = useState([]);
   const [completedOrders, setCompletedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [msg, setMsg] = useState(null);
 
-  const [senderAccount, setSenderAccount] = useState('');
-  const [payerAccount, setPayerAccount] = useState('');
   const [defaultService, setDefaultService] = useState('3D55');
-
-  const [importResults, setImportResults] = useState([]);
-  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     // No setInterval here anymore. Freshness is owned by a pg_cron job
@@ -122,12 +40,6 @@ export default function Cin7Fulfillment() {
     loadCachedSales();
     fetchCompletedHistory();
   }, []);
-
-  useEffect(() => {
-    if (activeTab === 'export') {
-      setSelectedExportIndices(csvQueue.map((_, idx) => idx));
-    }
-  }, [activeTab, csvQueue.length]);
 
   const filterAndSortSales = (rawSales) => {
     // No date filter here anymore -- there used to be a 30-day cutoff
@@ -423,23 +335,12 @@ export default function Cin7Fulfillment() {
 
     const updatedQueue = csvQueue.filter((_, idx) => idx !== indexToRemove);
     await saveQueueToDb(updatedQueue);
-    setSelectedExportIndices((prev) => prev.filter((i) => i !== indexToRemove));
   };
 
   const handleClearBatch = async () => {
     if (csvQueue.length === 0) return;
     await saveQueueToDb([]);
-    setSelectedExportIndices([]);
     setMsg({ type: 'success', text: 'Batch cleared. All Pantone orders returned to full view in Tab 1.' });
-  };
-
-  const handleSelectAllExport = () => setSelectedExportIndices(csvQueue.map((_, idx) => idx));
-  const handleUnselectAllExport = () => setSelectedExportIndices([]);
-
-  const toggleExportSelection = (index) => {
-    setSelectedExportIndices((prev) =>
-      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]
-    );
   };
 
   const handleUpdateQueueItem = (index, updatedFields) => {
@@ -448,357 +349,10 @@ export default function Cin7Fulfillment() {
     saveQueueToDb(updatedQueue);
   };
 
-  const handleDimensionDropdownChange = (index, presetName) => {
-    const preset = DIM_PRESETS[presetName];
-    if (preset) {
-      handleUpdateQueueItem(index, {
-        length: preset.length,
-        width: preset.width,
-        height: preset.height,
-        presetName: presetName,
-      });
-    } else {
-      handleUpdateQueueItem(index, { presetName: 'Custom / Manual' });
-    }
-  };
-
-  const downloadSelectedAusPostCsv = () => {
-    if (selectedExportIndices.length === 0) return;
-
-    const selectedEntries = csvQueue.filter((_, idx) => selectedExportIndices.includes(idx));
-    const rows = [AUSPOST_CSV_COLUMNS.map(csvSafe).join(',')];
-
-    selectedEntries.forEach((entry) => {
-      const order = entry.order_data;
-      const addr = order.ShippingAddress || order.rawAddress || {};
-
-      const rowMap = {
-        'Row type': 'S',
-        'Sender account': senderAccount,
-        'Payer account': payerAccount || senderAccount,
-        'Recipient contact name': order.Customer || order.customer,
-        'Recipient address line 1': addr.Line1 || '',
-        'Recipient address line 2': addr.Line2 || '',
-        'Recipient suburb': addr.City || '',
-        'Recipient state': addr.State || '',
-        'Recipient postcode': addr.Postcode || '',
-        'Send tracking email to recipient': order.Email || order.email ? 'Yes' : 'No',
-        'Recipient email address': order.Email || order.email || '',
-        'Recipient phone number': order.Phone || order.phone || '',
-        'Sender reference 1 ': order.OrderNumber || order.orderName,
-        'Product id': entry.service,
-        'Quantity': 1,
-        'Weight': entry.weight,
-        'Length': entry.length,
-        'Width': entry.width,
-        'Height': entry.height,
-        'Parcel contents': ' ',
-      };
-
-      // csvSafe on every field: consistent quoting/escaping, and it
-      // neutralises formula injection for any value that starts with
-      // =, +, -, or @ -- addresses and names here come from customer
-      // data via DEAR, not from us, so they can't be trusted as-is.
-      // Using `in` rather than `|| ''` so a real 0 (e.g. Weight) isn't
-      // swapped for an empty string, which `||` would do since 0 is falsy.
-      rows.push(
-        AUSPOST_CSV_COLUMNS.map((col) =>
-          csvSafe(col in rowMap ? rowMap[col] : '', col === 'Recipient phone number')
-        ).join(',')
-      );
-    });
-
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `auspost_pantone_${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-  };
-
-  // International Parcel Send export. Ported from a working, tested
-  // implementation for this account -- same column set, same field
-  // mapping, same fixed sender/customs defaults. Per-unit customs value
-  // is total declared value divided by quantity, not the total itself
-  // (AusPost wants the per-item value on the "Item -" columns).
-  const downloadSelectedIntlCsv = () => {
-    if (selectedExportIndices.length === 0) return;
-
-    const selectedEntries = csvQueue.filter((_, idx) => selectedExportIndices.includes(idx));
-    const rows = [AUSPOST_INTL_COLUMNS.map(csvSafe).join(',')];
-
-    selectedEntries.forEach((entry) => {
-      const order = entry.order_data;
-      const addr = order.ShippingAddress || order.rawAddress || {};
-      const unitCount = (order.Lines || order.lines || []).reduce(
-        (sum, l) => sum + (Number(l.Quantity) || 0), 0
-      ) || 1;
-
-      const totalValue = entry.customsValue;
-      let unitValue = '';
-      if (totalValue !== undefined && totalValue !== null && totalValue !== '') {
-        const tv = Number(totalValue);
-        if (!Number.isNaN(tv)) unitValue = unitCount ? Math.round((tv / unitCount) * 100) / 100 : tv;
-      }
-
-      const rowMap = {
-        'Row type': 's',
-        'Sender account': '',
-        'Payer account': '',
-        'Sender business name': INTL_SENDER_BUSINESS,
-        'Sender email address': INTL_SENDER_EMAIL,
-        'Sender phone number': '',
-        'Recipient contact name': order.Customer || order.customer,
-        'Recipient country / region': normaliseCountryCode(addr.Country),
-        'Recipient address line 1': addr.Line1 || '',
-        'Recipient address line 2': addr.Line2 || '',
-        'Recipient suburb': addr.City || '',
-        'Recipient state': addr.State || '',
-        'Recipient postcode ': addr.Postcode || '',
-        'Send tracking email to recipient': order.Email || order.email ? 'Yes' : 'No',
-        'Recipient email address': order.Email || order.email || '',
-        'Recipient phone number': order.Phone || order.phone || '',
-        'Sender reference 1 ': order.OrderNumber || order.orderName,
-        'Product id': INTL_PRODUCT_ID,
-        'Quantity': 1,
-        'Weight': entry.weight,
-        'Length': entry.length,
-        'Width': entry.width,
-        'Height': entry.height,
-        'Parcel contents': '',
-        'Digital declaration': 'No',
-        'Landed costs payer': 'RECEIVER_PAYS',
-        'Reason for export': INTL_REASON_FOR_EXPORT,
-        'Commercial value': 'yes',
-        'Item - Quantity': unitCount,
-        'Item - Unit weight': entry.weight,
-        'Item - Individual unit value (AUD)': unitValue,
-        'Item - Description': INTL_ITEM_DESCRIPTION,
-        'Item - Origin': INTL_ITEM_ORIGIN,
-        'Item - HS tariff code': INTL_ITEM_HS_CODE,
-        'Deliver wine to addressee only': 'No',
-        'Schedule 8 or medicinal cannabis': 'No',
-      };
-
-      rows.push(
-        AUSPOST_INTL_COLUMNS.map((col) =>
-          csvSafe(col in rowMap ? rowMap[col] : '', col === 'Recipient phone number')
-        ).join(',')
-      );
-    });
-
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `auspost_international_${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-  };
-
-  // Quote-aware CSV line splitter -- respects commas inside quoted
-  // fields instead of naively splitting on every comma. Confirmed real
-  // failure: a genuine AusPost export row had an address field like
-  // "15b, Warehouse 1, 175 Lower Gibbes St," (one quoted value with
-  // three embedded commas). Splitting that naively broke it into four
-  // separate columns, shifting every column after it out of position
-  // for that row -- which is exactly why Order # and Tracking # showed
-  // garbage like "NSW", "AU", "3J55" (fragments of address/state/
-  // service-code fields that had shifted into the wrong position).
-  const parseCsvLine = (line) => {
-    const cells = [];
-    let current = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          current += '"'; // escaped quote inside a quoted field
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        cells.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    cells.push(current.trim());
-    return cells;
-  };
-
-  const handleResultsCsvUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const lines = evt.target.result.split('\n').filter((l) => l.trim().length > 0);
-      if (lines.length < 2) return setMsg({ type: 'error', text: 'No data rows found in uploaded CSV.' });
-
-      const headers = parseCsvLine(lines[0]);
-      const refIdx = headers.findIndex((h) => h.toLowerCase().includes('sender reference') || h.toLowerCase().includes('reference'));
-      const trackingIdx = headers.findIndex((h) => h.toLowerCase().includes('connote') || h.toLowerCase().includes('tracking number') || h.toLowerCase().includes('article id'));
-      const urlIdx = headers.findIndex((h) => h.toLowerCase().includes('tracking url'));
-
-      const parsed = [];
-      for (let i = 1; i < lines.length; i++) {
-        const row = parseCsvLine(lines[i]);
-        const ref = row[refIdx];
-        const tracking = row[trackingIdx];
-        const url = urlIdx !== -1 && row[urlIdx] ? row[urlIdx] : `https://auspost.com.au/mypost/track/#/details/${tracking}`;
-
-        if (ref && tracking) {
-          // Match against Tab 2's queue immediately, at upload time --
-          // not deferred until execution, where a mismatch used to only
-          // surface after the fact, mixed in with genuine API errors.
-          // Showing this upfront lets a typo'd order number or an
-          // already-removed queue entry get caught and fixed before
-          // anything is actually sent to Cin7.
-          const queueMatch = csvQueue.find(
-            (q) => q.order_data.OrderNumber === ref || q.order_data.orderName === ref
-          );
-          parsed.push({
-            ref,
-            tracking,
-            url,
-            matched: !!queueMatch,
-            matchedCustomer: queueMatch ? (queueMatch.order_data.Customer || queueMatch.order_data.customer || '') : null,
-          });
-        }
-      }
-
-      // Only keep rows that actually matched something in Tab 2's
-      // current queue -- a bulk historical export (like a "past
-      // shipments" report) can have hundreds of old, unrelated rows
-      // that have nothing to do with what's queued right now. Showing
-      // every row from a 1000-row file made the genuinely relevant
-      // handful hard to find in the noise.
-      const allParsedCount = parsed.length;
-      const matchedOnly = parsed.filter((p) => p.matched);
-
-      setImportResults(matchedOnly);
-      setMsg({
-        type: 'success',
-        text: `${matchedOnly.length} of ${allParsedCount} rows in this file matched an order currently in Tab 2's batch -- only those are shown below.`,
-      });
-    };
-    reader.readAsText(file);
-  };
-
-  const handleExecuteCin7Fulfillment = async () => {
-    // Only ever process rows already confirmed matched above -- an
-    // unmatched row has nothing valid to fulfil against, so silently
-    // attempting it (the old behaviour) only produced a confusing
-    // failure message after the fact instead of being excluded upfront.
-    const matchedResults = importResults.filter((item) => item.matched);
-    if (matchedResults.length === 0) return;
-
-    setImporting(true);
-    let successCount = 0;
-    const completedRefs = [];
-    const failed = [];
-    const loggingFailures = [];
-
-    for (const item of matchedResults) {
-      const queueMatch = csvQueue.find((q) => q.order_data.OrderNumber === item.ref || q.order_data.orderName === item.ref);
-      if (!queueMatch) {
-        // Queue may have changed between upload and execute (e.g.
-        // someone else cleared the batch) -- re-check rather than
-        // trust the upload-time match blindly this far downstream.
-        failed.push(`${item.ref} (no matching queued order)`);
-        continue;
-      }
-
-      try {
-        const { data, error } = await supabase.functions.invoke('cin7-proxy', {
-          body: {
-            action: 'fulfill_sale',
-            saleId: queueMatch.order_data.ID || queueMatch.order_data.saleId,
-            orderNumber: queueMatch.order_data.OrderNumber || queueMatch.order_data.orderName,
-            trackingNumber: item.tracking,
-            trackingUrl: item.url,
-            carrier: 'Australia Post',
-          },
-        });
-
-        if (!error && data?.success) {
-          // Check this insert's actual result now, instead of trusting
-          // it blindly -- the DEAR-side fulfillment already succeeded
-          // by this point, so a failure here specifically means
-          // "genuinely dispatched, but won't show in Completed Orders."
-          // This file has no error_logs mechanism at all (unlike the
-          // Shopify side, which at least wrote there silently) --
-          // meaning a failed insert here left zero trace anywhere,
-          // matching exactly the "dispatched Friday, no record of it"
-          // symptom.
-          const { data: userData } = await supabase.auth.getUser();
-          const { error: historyErr } = await supabase.from('fulfillment_history').insert({
-            order_name: queueMatch.order_data.OrderNumber || queueMatch.order_data.orderName,
-            customer_name: queueMatch.order_data.Customer || queueMatch.order_data.customer || null,
-            tracking_number: item.tracking,
-            carrier: 'Australia Post',
-            shipped_at: new Date().toISOString(),
-            created_by: userData?.user?.id || null,
-          });
-
-          successCount++;
-          completedRefs.push(item.ref);
-          if (historyErr) {
-            console.error(`Completed Orders log failed for ${item.ref} (order genuinely dispatched):`, historyErr.message);
-            loggingFailures.push(`${item.ref} (${historyErr.message})`);
-          }
-        } else {
-          failed.push(`${item.ref} (${error?.message || data?.error || 'unknown error'})`);
-        }
-      } catch (e) {
-        failed.push(`${item.ref} (${e.message})`);
-        console.error('Failed to fulfill Cin7 sale:', e);
-      }
-    }
-
-    const remainingQueue = csvQueue.filter((q) => !completedRefs.includes(q.order_data.OrderNumber) && !completedRefs.includes(q.order_data.orderName));
-    await saveQueueToDb(remainingQueue);
-
-    const remainingSales = sales.filter((s) => !completedRefs.includes(s.OrderNumber) && !completedRefs.includes(s.orderName));
-    setSales(remainingSales);
-    await saveSalesToCache(remainingSales);
-
-    await fetchCompletedHistory();
-
-    setMsg({
-      type: (failed.length || loggingFailures.length) ? 'error' : 'success',
-      text: `Fulfilled ${successCount} orders.${failed.length ? ` Failed: ${failed.join(', ')}` : ''}${
-        loggingFailures.length
-          ? ` ${loggingFailures.length} shipped fine in Cin7 but failed to log to Completed Orders: ${loggingFailures.join(', ')}.`
-          : ''
-      }`,
-    });
-    setImporting(false);
-    setImportResults([]);
-  };
-
   return (
     <div className="space-y-4">
       {/* Top Settings Bar */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-        <div>
-          <label className="block font-bold text-slate-700 mb-1">AusPost Sender Account</label>
-          <input
-            type="text"
-            value={senderAccount}
-            onChange={(e) => setSenderAccount(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5"
-          />
-        </div>
-        <div>
-          <label className="block font-bold text-slate-700 mb-1">AusPost Payer Account</label>
-          <input
-            type="text"
-            value={payerAccount}
-            onChange={(e) => setPayerAccount(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5"
-          />
-        </div>
         <div>
           <label className="block font-bold text-slate-700 mb-1">Default Service</label>
           <select
@@ -875,28 +429,12 @@ export default function Cin7Fulfillment() {
           5️⃣ Tracking
         </button>
         <button
-          onClick={() => setActiveTab('export')}
-          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
-            activeTab === 'export' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
-          }`}
-        >
-          6️⃣ Pantone Export CSV ({csvQueue.length})
-        </button>
-        <button
-          onClick={() => setActiveTab('import')}
-          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
-            activeTab === 'import' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
-          }`}
-        >
-          7️⃣ Import Tracking
-        </button>
-        <button
           onClick={() => { setActiveTab('completed'); fetchCompletedHistory(); }}
           className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
             activeTab === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          8️⃣ Completed Orders ({completedOrders.length})
+          6️⃣ Completed Orders ({completedOrders.length})
         </button>
       </div>
 
@@ -1071,272 +609,7 @@ export default function Cin7Fulfillment() {
         <AusPostTrackingTab />
       )}
 
-      {/* TAB 6: EXPORT CSV */}
-      {activeTab === 'export' && (
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleSelectAllExport}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-1.5 rounded-md border border-slate-300 cursor-pointer"
-              >
-                Select All ({csvQueue.length})
-              </button>
-              <button
-                onClick={handleUnselectAllExport}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-1.5 rounded-md border border-slate-300 cursor-pointer"
-              >
-                Unselect All
-              </button>
-              <span className="text-xs text-slate-500 font-medium pl-2">
-                Selected: <strong className="text-purple-600">{selectedExportIndices.length}</strong> / {csvQueue.length}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleClearBatch}
-                className="bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs py-2 px-3 rounded-lg border border-red-200 cursor-pointer"
-              >
-                Clear Batch
-              </button>
-              <button
-                onClick={downloadSelectedAusPostCsv}
-                disabled={selectedExportIndices.length === 0}
-                className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50"
-              >
-                ⬇️ Domestic CSV ({selectedExportIndices.length})
-              </button>
-              <button
-                onClick={downloadSelectedIntlCsv}
-                disabled={selectedExportIndices.length === 0}
-                className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50"
-              >
-                🌏 International CSV ({selectedExportIndices.length})
-              </button>
-            </div>
-          </div>
-
-          {csvQueue.length === 0 ? (
-            <div className="p-8 text-center text-xs text-slate-400">
-              No orders queued in Pantone batch. Select orders from Tab 1 and click "Add Selected to Batch".
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
-                    <th className="p-3 w-10 text-center">Select</th>
-                    <th className="p-3">Order Number</th>
-                    <th className="p-3">Customer</th>
-                    <th className="p-3">Service</th>
-                    <th className="p-3">Box Dimension Preset</th>
-                    <th className="p-3">L x W x H (cm)</th>
-                    <th className="p-3">Weight (kg)</th>
-                    <th className="p-3 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {csvQueue.map((entry, idx) => {
-                    const isChecked = selectedExportIndices.includes(idx);
-                    const order = entry.order_data;
-                    const addr = order.ShippingAddress || order.rawAddress || {};
-                    const country = (addr.Country || '').trim().toUpperCase();
-                    const isInternational = country && country !== 'AUSTRALIA' && country !== 'AU';
-
-                    return (
-                      <React.Fragment key={idx}>
-                      <tr className={`hover:bg-slate-50/80 ${isChecked ? 'bg-purple-50/30' : ''}`}>
-                        <td className="p-3 text-center">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => toggleExportSelection(idx)}
-                            className="w-4 h-4 text-purple-600 border-slate-300 rounded cursor-pointer"
-                          />
-                        </td>
-
-                        <td className="p-3 font-bold text-slate-900">{order.OrderNumber || order.orderName}</td>
-
-                        <td className="p-3 font-semibold text-slate-800">{order.Customer || order.customer}</td>
-
-                        <td className="p-3">
-                          <select
-                            value={entry.service}
-                            onChange={(e) => handleUpdateQueueItem(idx, { service: e.target.value })}
-                            className="text-xs bg-white border border-slate-300 rounded px-2 py-1"
-                          >
-                            <option value="3D55">Parcel Post (3D55)</option>
-                            <option value="3J55">Express Post (3J55)</option>
-                            <option value="PTI7">International (PTI7)</option>
-                          </select>
-                        </td>
-
-                        <td className="p-3">
-                          <select
-                            value={entry.presetName || 'Custom / Manual'}
-                            onChange={(e) => handleDimensionDropdownChange(idx, e.target.value)}
-                            className="text-xs bg-white border border-slate-300 rounded px-2 py-1 max-w-[180px]"
-                          >
-                            {Object.keys(DIM_PRESETS).map((preset) => (
-                              <option key={preset} value={preset}>
-                                {preset}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-
-                        <td className="p-3">
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              step="0.1"
-                              value={entry.length}
-                              onChange={(e) =>
-                                handleUpdateQueueItem(idx, {
-                                  length: parseFloat(e.target.value) || 0,
-                                  presetName: 'Custom / Manual',
-                                })
-                              }
-                              className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
-                            />
-                            <span className="text-slate-400">×</span>
-                            <input
-                              type="number"
-                              step="0.1"
-                              value={entry.width}
-                              onChange={(e) =>
-                                handleUpdateQueueItem(idx, {
-                                  width: parseFloat(e.target.value) || 0,
-                                  presetName: 'Custom / Manual',
-                                })
-                              }
-                              className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
-                            />
-                            <span className="text-slate-400">×</span>
-                            <input
-                              type="number"
-                              step="0.1"
-                              value={entry.height}
-                              onChange={(e) =>
-                                handleUpdateQueueItem(idx, {
-                                  height: parseFloat(e.target.value) || 0,
-                                  presetName: 'Custom / Manual',
-                                })
-                              }
-                              className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
-                            />
-                          </div>
-                        </td>
-
-                        <td className="p-3">
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0.01"
-                            value={entry.weight}
-                            onChange={(e) =>
-                              handleUpdateQueueItem(idx, { weight: parseFloat(e.target.value) || 0.1 })
-                            }
-                            className="w-20 text-xs bg-white border border-slate-300 rounded px-2 py-1 text-right font-semibold text-slate-800"
-                          />
-                        </td>
-
-                        <td className="p-3 text-center">
-                          <button
-                            onClick={() => handleRemoveFromQueue(idx)}
-                            title="Remove from batch and expand in Tab 1"
-                            className="text-slate-400 hover:text-red-600 font-bold p-1 cursor-pointer text-sm"
-                          >
-                            ✕
-                          </button>
-                        </td>
-                      </tr>
-                      {isInternational && (
-                        <tr className="bg-blue-50/40">
-                          <td></td>
-                          <td colSpan={7} className="p-3">
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="font-bold text-blue-900">🌏 Customs value (AUD) for {order.OrderNumber || order.orderName}:</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={entry.customsValue ?? ''}
-                                onChange={(e) => handleUpdateQueueItem(idx, { customsValue: e.target.value })}
-                                placeholder="Total declared value"
-                                className="w-32 text-xs bg-white border border-blue-300 rounded px-2 py-1"
-                              />
-                              <span className="text-blue-700">Required on the international CSV -- per-unit value is calculated from this automatically.</span>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* TAB 3: IMPORT TRACKING */}
-      {activeTab === 'import' && (
-        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-4">
-          <label className="block text-xs font-bold text-slate-700">Upload Australia Post / Courier Result CSV File</label>
-          <input type="file" accept=".csv" onChange={handleResultsCsvUpload} className="block w-full text-xs text-slate-500" />
-
-          {importResults.length > 0 && (
-            <>
-              {/* Match preview -- shows every parsed row against Tab 2's
-                  queue BEFORE anything gets sent to Cin7, instead of only
-                  discovering a mismatch after attempting fulfilment. */}
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-slate-50 border-b">
-                    <tr>
-                      <th className="p-2">Order #</th>
-                      <th className="p-2">Tracking #</th>
-                      <th className="p-2">Match Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {importResults.map((item, idx) => (
-                      <tr key={idx} className={item.matched ? '' : 'bg-red-50'}>
-                        <td className="p-2 font-bold">{item.ref}</td>
-                        <td className="p-2 font-mono">{item.tracking}</td>
-                        <td className="p-2">
-                          {item.matched ? (
-                            <span className="text-emerald-700 font-bold">
-                              ✅ Matched{item.matchedCustomer ? ` — ${item.matchedCustomer}` : ''}
-                            </span>
-                          ) : (
-                            <span className="text-red-600 font-bold">❌ No matching order in Tab 2</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <button
-                onClick={handleExecuteCin7Fulfillment}
-                disabled={importing || importResults.every((i) => !i.matched)}
-                className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2 px-4 rounded-lg h-9 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {importing
-                  ? 'Fulfilling in Cin7...'
-                  : `✅ Fulfill ${importResults.filter((i) => i.matched).length} Matched Order${importResults.filter((i) => i.matched).length === 1 ? '' : 's'} in Cin7`}
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* TAB 4: COMPLETED ORDERS */}
+      {/* TAB 6: COMPLETED ORDERS */}
       {activeTab === 'completed' && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-4">
           <table className="w-full text-left text-xs border-collapse">
