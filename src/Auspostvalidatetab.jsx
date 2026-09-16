@@ -8,11 +8,12 @@ import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode } from './Auspost
 // available for after an edit. "Create Label" (bulk or per-row) hands
 // off to the shared handler in Cin7Fulfillment.jsx, since shipment/
 // label creation needs to update process state that Tab 3 also reads.
-export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, processState, onCreateShipmentAndLabel }) {
+export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, processState, onCreateShipmentAndLabel, onRemoveFromQueue }) {
   const [checkResults, setCheckResults] = useState({});
   const [checkingAll, setCheckingAll] = useState(false);
   const [selectedNumbers, setSelectedNumbers] = useState([]);
   const [creatingLabels, setCreatingLabels] = useState(false);
+  const [sendingBack, setSendingBack] = useState(false);
 
   // Tracks which order numbers have already been auto-checked once, so
   // arriving/edited entries get checked without re-checking everything
@@ -126,6 +127,20 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
     setCreatingLabels(false);
   };
 
+  // Sends selected orders back to Tab 1 -- only makes sense for orders
+  // that don't already have a real AusPost shipment created (those
+  // belong to Tab 3's "Delete Shipment" instead, which also cleans up
+  // the real shipment/label, not just the local queue entry).
+  const handleSendBackToTab1 = async () => {
+    const eligible = selectedNumbers.filter((n) => !processState[n]?.shipmentId);
+    if (eligible.length === 0) return;
+    if (!window.confirm(`Send ${eligible.length} order(s) back to Tab 1?`)) return;
+    setSendingBack(true);
+    await onRemoveFromQueue(eligible);
+    setSelectedNumbers((prev) => prev.filter((n) => !eligible.includes(n)));
+    setSendingBack(false);
+  };
+
   if (csvQueue.length === 0) {
     return (
       <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-xs text-slate-400 shadow-xs">
@@ -149,6 +164,13 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
             className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50"
           >
             {checkingAll ? 'Checking...' : '✅ Re-check All'}
+          </button>
+          <button
+            onClick={handleSendBackToTab1}
+            disabled={sendingBack || selectedNumbers.length === 0}
+            className="bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50 border border-slate-300"
+          >
+            {sendingBack ? 'Sending...' : `↩️ Send Back to Tab 1 (${selectedNumbers.length})`}
           </button>
           <button
             onClick={handleCreateLabelsForSelected}

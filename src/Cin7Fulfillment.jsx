@@ -343,6 +343,21 @@ export default function Cin7Fulfillment() {
     await saveQueueToDb(updatedQueue);
   };
 
+  // Bulk-safe version for Tab 2's "Send back to Tab 1" -- computes the
+  // full removal against one snapshot of csvQueue in a single update,
+  // rather than calling handleRemoveFromQueue repeatedly in a loop
+  // (which would see a stale csvQueue between calls, since React state
+  // updates aren't synchronous/immediate within a loop).
+  const handleRemoveMultipleFromQueue = async (orderNumbers) => {
+    if (orderNumbers.length === 0) return;
+    const updatedQueue = csvQueue.filter((e) => {
+      const orderNumber = e.order_data.OrderNumber || e.order_data.orderName;
+      return !orderNumbers.includes(orderNumber);
+    });
+    await saveQueueToDb(updatedQueue);
+    setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to Tab 1.` });
+  };
+
   const handleClearBatch = async () => {
     if (csvQueue.length === 0) return;
     await saveQueueToDb([]);
@@ -524,6 +539,7 @@ export default function Cin7Fulfillment() {
   // entirely -- which is what makes it reappear in Tab 1, since Tab 1
   // filters out anything currently queued.
   const handleDeleteShipment = async (entries) => {
+    const successfullyDeleted = [];
     for (const entry of entries) {
       const order = entry.order_data;
       const orderNumber = order.OrderNumber || order.orderName;
@@ -537,12 +553,16 @@ export default function Cin7Fulfillment() {
           delete next[orderNumber];
           return next;
         });
-        const idx = csvQueue.findIndex((e) => (e.order_data.OrderNumber || e.order_data.orderName) === orderNumber);
-        if (idx !== -1) await handleRemoveFromQueue(idx);
+        successfullyDeleted.push(orderNumber);
       } catch (err) {
         setMsg({ type: 'error', text: `Couldn't delete shipment for ${orderNumber}: ${err.message}` });
       }
     }
+    // One bulk removal against a single csvQueue snapshot, after every
+    // delete call has resolved -- same reasoning as
+    // handleRemoveMultipleFromQueue: looping the single-item removal
+    // here would read a stale csvQueue between iterations.
+    if (successfullyDeleted.length > 0) await handleRemoveMultipleFromQueue(successfullyDeleted);
   };
 
   // Tab 3's "Create Manifest": books the manifest (seals every ready
@@ -910,6 +930,7 @@ export default function Cin7Fulfillment() {
           onUpdateQueueItem={handleUpdateQueueItem}
           processState={processState}
           onCreateShipmentAndLabel={handleCreateShipmentAndLabel}
+          onRemoveFromQueue={handleRemoveMultipleFromQueue}
         />
       )}
 

@@ -25,6 +25,13 @@ export const INTL_ITEM_HS_CODE = '9609100919';
 // account 0005303796) -- used as the "from" for every AusPost address
 // validation, pricing check, and shipment creation.
 export const SENDER_ADDRESS = {
+  // Real, confirmed registered business name from tonight's actual
+  // production Get Accounts response for account 0005303796. Missing
+  // entirely before -- Get Shipment Price didn't need it (pricing
+  // doesn't care who's sending), but Create Shipment does, which is
+  // why shipment creation failed with a missing-field error while
+  // pricing worked fine using this same object.
+  name: 'Rocket Logistics Australia Pty Ltd',
   suburb: 'CAMPBELLFIELD',
   state: 'VIC',
   postcode: '3061',
