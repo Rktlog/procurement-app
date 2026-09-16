@@ -495,6 +495,10 @@ export default function Cin7Fulfillment() {
           // A6, per spec -- confirmed valid layout value via AusPost's
           // real documentation (A4-1pp, A4-3pp, A4-4pp, A6-1pp).
           labelLayout: LABEL_LAYOUT_A6,
+          // A6 doesn't support branded:true -- confirmed via a real
+          // INVALID_BRANDING_REQUEST (70010) error when it was left
+          // defaulting to true.
+          labelBranded: false,
         });
         const label = labelData.result?.labels?.[0];
         updateProcessState(orderNumber, { stage: 'label_created', labelRequestId: label?.request_id || null, labelUrl: label?.url || null, error: null });
