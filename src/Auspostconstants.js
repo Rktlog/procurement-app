@@ -10,11 +10,17 @@ export const INTL_SENDER_BUSINESS = 'Rocket Logistics';
 export const INTL_SENDER_EMAIL = 'logistics@rocketlog.com.au';
 export const INTL_PRODUCT_ID = 'PTI7';
 
-// Confirmed via AusPost's real documentation: valid label layouts are
-// A4-1pp, A4-3pp, A4-4pp, and A6-1pp. The layout must also be valid for
-// the product type of the items in the shipment -- worth keeping in
-// mind if a future product ever rejects A6 specifically.
-export const LABEL_LAYOUT_A6 = 'A6-1pp';
+// Confirmed via AusPost's real, complete documentation: the A6 layout
+// value is genuinely different per product family. Parcel Post,
+// Express Post, International, and International Commercial all use
+// "THERMAL-LABEL-A6-1PP" -- the plain "A6-1pp"/"A6-1PP" naming is only
+// valid for StarTrack, StarTrack Courier, and On Demand, a different
+// product family entirely. The earlier "A6-1pp" value was wrong for
+// our actual products (3D55/3J55/PTI7, all Parcel Post/Express Post/
+// International) -- AusPost silently falling back to a different,
+// much longer format instead of erroring is what "the express post
+// label seems too long" was actually describing.
+export const LABEL_LAYOUT_A6 = 'THERMAL-LABEL-A6-1PP';
 export const LABEL_LAYOUT_A4 = 'A4-1pp';
 export const INTL_REASON_FOR_EXPORT = 'Commercial Sale of Goods (B2B)';
 export const INTL_ITEM_ORIGIN = 'US';

@@ -464,6 +464,12 @@ export default function Cin7Fulfillment() {
           auspostShipments: [
             {
               shipment_reference: orderNumber,
+              // Real confirmed field name: customer_reference_1 -- this
+              // is what "Sender reference 1" in the old CSV template
+              // corresponds to in the JSON API, per the request field
+              // reference. Order number goes here specifically, per
+              // spec.
+              customer_reference_1: truncateField(orderNumber, 50),
               from: SENDER_ADDRESS,
               to: toAddress,
               items: [
