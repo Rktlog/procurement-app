@@ -1,23 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
-
-const AUSPOST_CSV_COLUMNS = [
-  'Row type', 'Sender account', 'Payer account', 'Recipient contact name',
-  'Recipient business name', 'Recipient address line 1', 'Recipient address line 2',
-  'Recipient address line 3', 'Recipient suburb', 'Recipient state',
-  'Recipient postcode', 'Send tracking email to recipient', 'Recipient email address',
-  'Recipient phone number', 'Delivery/special instruction 1', 'Special instruction 2',
-  'Special instruction 3', 'Sender reference 1 ', 'Sender reference 2', 'Product id',
-  'Authority to leave', 'Safe drop ', 'Quantity', 'Packaging type', 'Weight',
-  'Length', 'Width', 'Height', 'Parcel contents', 'Transit cover value',
-  'Deliver wine to addressee only', 'Schedule 8 or medicinal cannabis'
-];
+import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
 
 const CARRIERS = ['Australia Post', 'StarTrack', 'DHL', 'CouriersPlease', 'Other'];
 
 const SERVICE_OPTIONS = {
   'Parcel Post (3D55)': '3D55',
   'Express Post (3J55)': '3J55',
+  'International (PTI7)': 'PTI7',
 };
 
 const DIM_PRESETS = {
@@ -44,36 +34,55 @@ export default function ShopifyFulfillment() {
   const [orders, setOrders] = useState([]);
   const [selectedOrderIds, setSelectedOrderIds] = useState([]);
   const [csvQueue, setCsvQueue] = useState([]);
-  const [selectedExportIndices, setSelectedExportIndices] = useState([]);
   const [completedOrders, setCompletedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [msg, setMsg] = useState(null);
 
-  const [senderAccount, setSenderAccount] = useState('');
-  const [payerAccount, setPayerAccount] = useState('');
   const [defaultService, setDefaultService] = useState('3D55');
+
+  // --- Validate & Price (Tab 2) ---
+  const [checkResults, setCheckResults] = useState({});
+  const [checkingAll, setCheckingAll] = useState(false);
+  const [selectedForLabel, setSelectedForLabel] = useState([]);
+  const [creatingLabels, setCreatingLabels] = useState(false);
+  const [sendingBack, setSendingBack] = useState(false);
+  const autoCheckedRef = useRef(new Set());
+
+  // --- Create Label & Book Manifest (Tab 3) ---
+  const [processState, setProcessState] = useState({});
+  const [manifestBusy, setManifestBusy] = useState(false);
+  const [orderReference, setOrderReference] = useState(`Order-${new Date().toISOString().slice(0, 10)}`);
+  const [selectedManifestNumbers, setSelectedManifestNumbers] = useState([]);
+  const [redownloadingFor, setRedownloadingFor] = useState(null);
+
+  // --- Saved Manifests (Tab 4) ---
+  const [manifests, setManifests] = useState([]);
+  const [manifestsLoading, setManifestsLoading] = useState(false);
+  const [manifestsError, setManifestsError] = useState(null);
+  const [expandedManifestId, setExpandedManifestId] = useState(null);
+  const [downloadingKey, setDownloadingKey] = useState(null);
+  const [downloadError, setDownloadError] = useState({});
+
+  // --- Tracking (Tab 5) ---
+  const [trackingRows, setTrackingRows] = useState([]);
+  const [trackingLoading, setTrackingLoading] = useState(false);
+  const [trackingError, setTrackingError] = useState(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [statusResults, setStatusResults] = useState({});
+  const [trackingSearchTerm, setTrackingSearchTerm] = useState('');
 
   const [carrierMap, setCarrierMap] = useState({});
   const [trackingMap, setTrackingMap] = useState({});
   const [dispatchingMap, setDispatchingMap] = useState({});
   const [itemQtysMap, setItemQtysMap] = useState({});
 
-  const [importResults, setImportResults] = useState([]);
-  const [importing, setImporting] = useState(false);
-
   useEffect(() => {
     loadCachedOrdersAndCheckAge();
     fetchQueueFromDb();
     fetchCompletedHistory();
   }, []);
-
-  useEffect(() => {
-    if (activeTab === 'export') {
-      setSelectedExportIndices(csvQueue.map((_, idx) => idx));
-    }
-  }, [activeTab, csvQueue.length]);
 
   const loadCachedOrdersAndCheckAge = async () => {
     try {
@@ -555,16 +564,540 @@ export default function ShopifyFulfillment() {
     const weight = Math.max(parseFloat(calculatedWeight).toFixed(2), 0.1);
     const autoDims = getAutoDimensionsFromWeight(weight);
 
+    // International takes priority over the domestic auto-detection --
+    // detectedService only ever distinguishes Parcel Post vs Express
+    // Post, it has no concept of international. Same real field name
+    // confirmed via shopify-proxy.ts's addressLines helper
+    // (countryCodeV2), not a guess.
+    const addr = order.rawAddress || {};
+    const country = (addr.countryCodeV2 || '').trim().toUpperCase();
+    const isInternational = country && country !== 'AU';
+
     return {
       order_data: { ...order },
       selected_items: itemsToDispatch,
-      service: order.detectedService || defaultService,
+      service: isInternational ? INTL_PRODUCT_ID : (order.detectedService || defaultService),
       weight: weight,
       length: autoDims.length,
       width: autoDims.width,
       height: autoDims.height,
       presetName: autoDims.presetName,
     };
+  };
+
+  // ===========================================================
+  // TAB 2: Validate & Price
+  // ===========================================================
+  const handleCheckEntry = async (entry) => {
+    const order = entry.order_data;
+    const orderNumber = order.orderName;
+    const addr = order.rawAddress || {};
+    const isInternational = entry.service === INTL_PRODUCT_ID;
+
+    setCheckResults((prev) => ({ ...prev, [orderNumber]: { ...(prev[orderNumber] || {}), checking: true } }));
+    const result = { checking: false, addressValid: null, addressSuggestions: [], addressError: null, price: null, priceError: null };
+
+    if (!isInternational) {
+      try {
+        const { data, error } = await supabase.functions.invoke('cin7-proxy', {
+          body: {
+            action: 'validate_auspost_suburb',
+            auspostSuburb: addr.city || '',
+            auspostState: addr.provinceCode || '',
+            auspostPostcode: addr.zip || '',
+          },
+        });
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+        result.addressValid = !!data.result?.found;
+        result.addressSuggestions = data.result?.results || [];
+      } catch (err) {
+        result.addressError = err.message;
+      }
+    }
+
+    try {
+      const toAddress = isInternational
+        ? { suburb: addr.city || '', state: addr.provinceCode || '', postcode: addr.zip || '', country: normaliseCountryCode(addr.countryCodeV2) }
+        : { suburb: addr.city || '', state: addr.provinceCode || '', postcode: addr.zip || '' };
+
+      const { data, error } = await supabase.functions.invoke('cin7-proxy', {
+        body: {
+          action: 'get_auspost_shipment_price',
+          auspostShipments: [
+            {
+              from: SENDER_ADDRESS,
+              to: toAddress,
+              items: [
+                {
+                  product_id: entry.service,
+                  length: String(entry.length),
+                  width: String(entry.width),
+                  height: String(entry.height),
+                  weight: String(entry.weight),
+                },
+              ],
+            },
+          ],
+        },
+      });
+      if (error) throw error;
+      if (!data.success) throw new Error(data.error);
+      const summary = data.result?.shipments?.[0]?.shipment_summary;
+      result.price = summary?.total_cost ?? null;
+    } catch (err) {
+      result.priceError = err.message;
+    }
+
+    setCheckResults((prev) => ({ ...prev, [orderNumber]: result }));
+  };
+
+  const handleCheckAllQueued = async () => {
+    if (csvQueue.length === 0) return;
+    setCheckingAll(true);
+    for (const entry of csvQueue) {
+      await handleCheckEntry(entry);
+      autoCheckedRef.current.add(entry.order_data.orderName);
+    }
+    setCheckingAll(false);
+  };
+
+  // Auto-check requirement: any order newly present in the queue gets
+  // validated and priced automatically, without waiting for a manual
+  // click. Only the genuinely new ones run -- already-checked entries
+  // aren't silently re-checked on every render.
+  useEffect(() => {
+    const toCheck = csvQueue.filter((entry) => !autoCheckedRef.current.has(entry.order_data.orderName));
+    if (toCheck.length === 0) return;
+    (async () => {
+      for (const entry of toCheck) {
+        autoCheckedRef.current.add(entry.order_data.orderName);
+        await handleCheckEntry(entry);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [csvQueue.length]);
+
+  // ===========================================================
+  // TAB 3: Create Label & Book Manifest
+  // ===========================================================
+  const getProcessState = (orderNumber) => processState[orderNumber] || {};
+  const updateProcessState = (orderNumber, patch) => {
+    setProcessState((prev) => ({ ...prev, [orderNumber]: { ...(prev[orderNumber] || {}), ...patch } }));
+  };
+
+  const callAusPostAction = async (body) => {
+    const { data, error } = await supabase.functions.invoke('cin7-proxy', { body });
+    if (error) throw error;
+    if (!data.success) {
+      const err = new Error(data.error);
+      err.raw = data.raw;
+      throw err;
+    }
+    return data;
+  };
+
+  // Routed through the server-side proxy rather than fetching the PDF
+  // URL directly from the browser -- AusPost's signed label/asset URLs
+  // can be blocked by CORS the same way Shopify's own CDN images are
+  // (hence shopify-proxy.ts's own image proxy), and a server-to-server
+  // request sidesteps that entirely.
+  const downloadFileFromUrl = async (url, filename) => {
+    const { data, error } = await supabase.functions.invoke('cin7-proxy', {
+      body: { action: 'fetch_pdf_data_uri', pdfUrl: url },
+    });
+    if (error) throw error;
+    if (!data.success) throw new Error(data.error);
+
+    const byteChars = atob(data.dataUri.split(',')[1]);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'application/pdf' });
+
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  // Builds a properly AusPost-safe "to" address -- name/business_name
+  // truncated to the real confirmed 40-character limit, full address
+  // broken across up to 3 lines respecting each line's own limit
+  // (40/60/60), rather than sending raw untruncated Shopify data that
+  // AusPost's API would silently cut off or reject. Same helper
+  // already proven on the Pantone/DEAR side, just fed Shopify's own
+  // field names (address1/address2/city/provinceCode/zip) instead.
+  const buildSafeToAddress = (order, isInternational) => {
+    const addr = order.rawAddress || {};
+    const fullAddressText = [addr.address1, addr.address2].filter(Boolean).join(' ');
+    const lines = buildAddressLines(fullAddressText);
+
+    return {
+      name: truncateField(order.customer || 'Customer'),
+      business_name: addr.company ? truncateField(addr.company) : undefined,
+      lines: lines.length ? lines : [truncateField(fullAddressText)],
+      suburb: addr.city || '',
+      state: addr.provinceCode || '',
+      postcode: addr.zip || '',
+      phone: order.phone || '',
+      email: order.email || '',
+      ...(isInternational ? { country: normaliseCountryCode(addr.countryCodeV2) } : {}),
+    };
+  };
+
+  // Tab 2's "Create Label" action: creates the AusPost shipment, then
+  // immediately creates its label (A6, unbranded-stationery-safe per
+  // AusPost's real branding documentation -- branded:true since this
+  // business doesn't use AusPost's pre-printed stock), then forces a
+  // real download of the label PDF. Only processes entries that don't
+  // already have a shipment -- safe to re-run on a partially-completed
+  // batch.
+  const handleCreateShipmentAndLabel = async (entries) => {
+    for (const entry of entries) {
+      const order = entry.order_data;
+      const orderNumber = order.orderName;
+      if (getProcessState(orderNumber).shipmentId) continue;
+
+      updateProcessState(orderNumber, { stage: 'creating_shipment', error: null });
+      try {
+        const isInternational = entry.service === INTL_PRODUCT_ID;
+        const toAddress = buildSafeToAddress(order, isInternational);
+
+        const shipData = await callAusPostAction({
+          action: 'create_auspost_shipment',
+          auspostShipments: [
+            {
+              shipment_reference: orderNumber,
+              // Real confirmed field name: customer_reference_1 -- what
+              // "Sender reference 1" in the old CSV template
+              // corresponds to in the JSON API.
+              customer_reference_1: truncateField(orderNumber, 50),
+              from: SENDER_ADDRESS,
+              to: toAddress,
+              items: [
+                {
+                  item_reference: orderNumber,
+                  product_id: entry.service,
+                  length: String(entry.length),
+                  width: String(entry.width),
+                  height: String(entry.height),
+                  weight: String(entry.weight),
+                },
+              ],
+            },
+          ],
+        });
+
+        const shipment = shipData.result?.shipments?.[0];
+        const shipmentId = shipment?.shipment_id || null;
+        const trackingNumber = shipment?.items?.[0]?.tracking_details?.article_id || null;
+        updateProcessState(orderNumber, { stage: 'shipment_created', shipmentId, trackingNumber, error: null });
+
+        if (!shipmentId) continue;
+
+        updateProcessState(orderNumber, { stage: 'creating_label' });
+        const labelData = await callAusPostAction({
+          action: 'create_auspost_label',
+          auspostShipmentIds: [shipmentId],
+          labelGroup: isInternational ? 'International' : (entry.service === '3J55' ? 'Express Post' : 'Parcel Post'),
+          // THERMAL-LABEL-A6-1PP -- confirmed real value for Parcel
+          // Post/Express Post/International specifically (StarTrack/On
+          // Demand use a different bare "A6-1pp" naming).
+          labelLayout: LABEL_LAYOUT_A6,
+          // true -- confirmed via AusPost's real branding docs: needed
+          // specifically when NOT using purchased AusPost stationery.
+          labelBranded: true,
+        });
+        const label = labelData.result?.labels?.[0];
+        updateProcessState(orderNumber, { stage: 'label_created', labelRequestId: label?.request_id || null, labelUrl: label?.url || null, error: null });
+
+        if (label?.url) {
+          try {
+            await downloadFileFromUrl(label.url, `${orderNumber}_label.pdf`);
+          } catch (downloadErr) {
+            updateProcessState(orderNumber, { error: `Label created but download failed: ${downloadErr.message}` });
+          }
+        }
+      } catch (err) {
+        updateProcessState(orderNumber, { stage: 'error', error: err.message });
+      }
+    }
+  };
+
+  // Tab 3's re-download -- for a shipment not yet booked into a
+  // manifest, the label URL from creation may have expired, so this
+  // re-fetches a fresh one from AusPost directly via the stored
+  // request_id (Get Label), rather than assuming the original URL is
+  // still valid.
+  const handleRedownloadLabel = async (entry) => {
+    const order = entry.order_data;
+    const orderNumber = order.orderName;
+    const s = getProcessState(orderNumber);
+    if (!s.labelRequestId) return;
+    try {
+      const data = await callAusPostAction({ action: 'get_auspost_label', auspostRequestId: s.labelRequestId });
+      const url = data.result?.url || data.result?.labels?.[0]?.url;
+      if (!url) throw new Error('No label URL returned.');
+      await downloadFileFromUrl(url, `${orderNumber}_label.pdf`);
+    } catch (err) {
+      setMsg({ type: 'error', text: `Couldn't re-download label for ${orderNumber}: ${err.message}` });
+    }
+  };
+
+  // Bulk-safe queue removal -- computes the full removal against one
+  // snapshot of csvQueue in a single update, rather than looping the
+  // single-item handleRemoveFromQueue (which would see a stale
+  // csvQueue between calls, since React state updates aren't
+  // synchronous/immediate within a loop).
+  const handleRemoveMultipleFromQueue = async (orderNumbers) => {
+    if (orderNumbers.length === 0) return;
+    const updatedQueue = csvQueue.filter((e) => !orderNumbers.includes(e.order_data.orderName));
+    await saveQueueToDb(updatedQueue);
+    setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to Tab 1.` });
+  };
+
+  // Tab 3's "Delete Shipment": deletes the real AusPost shipment
+  // (removes the label with it -- AusPost has no separate "delete
+  // label" call), then clears local process state, then removes the
+  // order from csvQueue entirely -- which is what makes it reappear
+  // in Tab 1.
+  const handleDeleteShipment = async (entries) => {
+    const successfullyDeleted = [];
+    for (const entry of entries) {
+      const order = entry.order_data;
+      const orderNumber = order.orderName;
+      const s = getProcessState(orderNumber);
+      if (!s.shipmentId) continue;
+
+      try {
+        await callAusPostAction({ action: 'delete_auspost_shipment', auspostShipmentIds: [s.shipmentId] });
+        setProcessState((prev) => {
+          const next = { ...prev };
+          delete next[orderNumber];
+          return next;
+        });
+        successfullyDeleted.push(orderNumber);
+      } catch (err) {
+        setMsg({ type: 'error', text: `Couldn't delete shipment for ${orderNumber}: ${err.message}` });
+      }
+    }
+    if (successfullyDeleted.length > 0) await handleRemoveMultipleFromQueue(successfullyDeleted);
+  };
+
+  // Tab 3's "Create Manifest": books the manifest (seals every ready
+  // shipment into one real AusPost order), downloads the real order
+  // summary PDF, then updates Shopify for each shipment via
+  // mark_fulfilled (matching exactly the same pattern already proven
+  // in the original CSV/Import Tracking flow), then removes completed
+  // entries from the active batch.
+  const handleCreateManifestAndComplete = async (entries, orderReferenceValue) => {
+    const readyEntries = entries.filter((entry) => {
+      const orderNumber = entry.order_data.orderName;
+      const s = getProcessState(orderNumber);
+      return s.shipmentId && s.labelRequestId && !s.orderId;
+    });
+    if (readyEntries.length === 0) return;
+
+    try {
+      const shipmentIds = readyEntries.map((entry) => getProcessState(entry.order_data.orderName).shipmentId);
+      const labelRequestIds = {};
+      const labelUrls = {};
+      const customerNames = {};
+      readyEntries.forEach((entry) => {
+        const orderNumber = entry.order_data.orderName;
+        const s = getProcessState(orderNumber);
+        labelRequestIds[s.shipmentId] = s.labelRequestId;
+        labelUrls[s.shipmentId] = s.labelUrl;
+        customerNames[s.shipmentId] = entry.order_data.customer || null;
+      });
+
+      const orderData = await callAusPostAction({
+        action: 'create_auspost_order',
+        auspostShipmentIds: shipmentIds,
+        auspostOrderReference: orderReferenceValue,
+        auspostLabelRequestIds: labelRequestIds,
+        auspostLabelUrls: labelUrls,
+        auspostCustomerNames: customerNames,
+      });
+      const orderId = orderData.result?.order?.order_id || null;
+
+      readyEntries.forEach((entry) => {
+        updateProcessState(entry.order_data.orderName, { stage: 'booked', orderId, error: null });
+      });
+
+      if (orderId) {
+        try {
+          const summaryData = await callAusPostAction({ action: 'get_auspost_order_summary', auspostOrderId: orderId });
+          if (summaryData.pdfBase64) {
+            const byteChars = atob(summaryData.pdfBase64);
+            const byteNumbers = new Array(byteChars.length);
+            for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+            const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'application/pdf' });
+            const objectUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = objectUrl;
+            a.download = `manifest_${orderId}.pdf`;
+            a.click();
+            URL.revokeObjectURL(objectUrl);
+          }
+        } catch (summaryErr) {
+          setMsg({ type: 'error', text: `Manifest booked, but couldn't download the summary PDF: ${summaryErr.message}` });
+        }
+      }
+
+      const loggingFailures = [];
+      for (const entry of readyEntries) {
+        const order = entry.order_data;
+        const orderNumber = order.orderName;
+        const s = getProcessState(orderNumber);
+        try {
+          const trackUrl = `https://auspost.com.au/mypost/track/#/details/${s.trackingNumber}`;
+          const { data, error } = await supabase.functions.invoke('shopify-proxy', {
+            body: {
+              action: 'mark_fulfilled',
+              fulfillmentOrderId: order.fulfillmentOrderId,
+              lineItems: entry.selected_items,
+              trackingNumber: s.trackingNumber,
+              trackingUrl: trackUrl,
+            },
+          });
+          if (error) throw error;
+          if (!data?.success) throw new Error(data?.error || 'Unknown error');
+
+          const loggedLocally = await saveShipmentToDb(
+            orderNumber, '', s.trackingNumber, entry.service, '', '', entry.selected_items, order
+          );
+          updateProcessState(orderNumber, {
+            stage: 'complete',
+            shopifyUpdated: true,
+            error: loggedLocally ? null : 'Shipped fine, but failed to log to Completed Orders.',
+          });
+        } catch (err) {
+          loggingFailures.push(orderNumber);
+          updateProcessState(orderNumber, { stage: 'error', error: `Shopify update failed: ${err.message}` });
+        }
+      }
+
+      const completedNumbers = readyEntries
+        .map((entry) => entry.order_data.orderName)
+        .filter((n) => !loggingFailures.includes(n));
+      const remainingQueue = csvQueue.filter((e) => !completedNumbers.includes(e.order_data.orderName));
+      await saveQueueToDb(remainingQueue);
+
+      setMsg({
+        type: loggingFailures.length ? 'error' : 'success',
+        text: loggingFailures.length
+          ? `Manifest booked, but Shopify update failed for: ${loggingFailures.join(', ')}.`
+          : `Manifest booked and Shopify updated for ${completedNumbers.length} order(s).`,
+      });
+    } catch (err) {
+      readyEntries.forEach((entry) => {
+        updateProcessState(entry.order_data.orderName, { stage: 'error', error: `Manifest booking failed: ${err.message}` });
+      });
+    }
+  };
+
+  // ===========================================================
+  // TAB 4: Saved Manifests
+  // ===========================================================
+  const loadManifests = async () => {
+    setManifestsLoading(true);
+    setManifestsError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke('cin7-proxy', { body: { action: 'list_auspost_manifests' } });
+      if (error) throw error;
+      if (!data.success) throw new Error(data.error);
+      setManifests(data.manifests || []);
+    } catch (err) {
+      setManifestsError(err.message);
+    }
+    setManifestsLoading(false);
+  };
+
+  const handleDownloadLabel = async (orderId, shipmentId) => {
+    const key = `${orderId}_${shipmentId}`;
+    setDownloadingKey(key);
+    setDownloadError((prev) => ({ ...prev, [key]: null }));
+    try {
+      const { data, error } = await supabase.functions.invoke('cin7-proxy', {
+        body: { action: 'get_auspost_manifest_label', auspostOrderId: orderId, auspostShipmentId: shipmentId },
+      });
+      if (error) throw error;
+      if (!data.success) throw new Error(data.error);
+      window.open(data.url, '_blank');
+    } catch (err) {
+      setDownloadError((prev) => ({ ...prev, [key]: err.message }));
+    }
+    setDownloadingKey(null);
+  };
+
+  // ===========================================================
+  // TAB 5: Tracking
+  // ===========================================================
+  const loadTrackingRows = async () => {
+    setTrackingLoading(true);
+    setTrackingError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke('cin7-proxy', { body: { action: 'list_auspost_manifests' } });
+      if (error) throw error;
+      if (!data.success) throw new Error(data.error);
+
+      const flattened = [];
+      (data.manifests || []).forEach((m) => {
+        (m.shipments || []).forEach((s) => {
+          if (s.tracking_number) {
+            flattened.push({ orderReference: s.shipment_reference || '—', customerName: s.customer_name || '—', trackingNumber: s.tracking_number, bookedAt: m.created_at });
+          }
+        });
+      });
+      setTrackingRows(flattened);
+    } catch (err) {
+      setTrackingError(err.message);
+    }
+    setTrackingLoading(false);
+  };
+
+  const visibleTrackingRows = trackingRows.filter((r) => {
+    if (!trackingSearchTerm.trim()) return true;
+    const q = trackingSearchTerm.toLowerCase();
+    return (
+      r.orderReference.toLowerCase().includes(q) ||
+      r.trackingNumber.toLowerCase().includes(q) ||
+      (r.customerName || '').toLowerCase().includes(q)
+    );
+  });
+
+  const handleCheckTrackingStatus = async () => {
+    if (visibleTrackingRows.length === 0) return;
+    setCheckingStatus(true);
+
+    for (let i = 0; i < visibleTrackingRows.length; i += 10) {
+      const batch = visibleTrackingRows.slice(i, i + 10);
+      try {
+        const { data, error } = await supabase.functions.invoke('cin7-proxy', {
+          body: { action: 'track_auspost_items', auspostTrackingIds: batch.map((r) => r.trackingNumber) },
+        });
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+
+        const newResults = {};
+        (data.result?.tracking_results || []).forEach((tr) => {
+          const status = tr.status || tr.consignment?.status || tr.trackable_items?.[0]?.status || (tr.errors?.length ? `Error: ${tr.errors[0].name}` : 'Unknown');
+          newResults[tr.tracking_id] = status;
+        });
+        setStatusResults((prev) => ({ ...prev, ...newResults }));
+      } catch (err) {
+        const failedResults = {};
+        batch.forEach((r) => { failedResults[r.trackingNumber] = `Check failed: ${err.message}`; });
+        setStatusResults((prev) => ({ ...prev, ...failedResults }));
+      }
+      if (i + 10 < visibleTrackingRows.length) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+    setCheckingStatus(false);
   };
 
   const handleBulkQueueSelected = async () => {
@@ -586,7 +1119,7 @@ export default function ShopifyFulfillment() {
     await saveQueueToDb(updatedQueue);
 
     setSelectedOrderIds([]);
-    setMsg({ type: 'success', text: `Added ${newQueueEntries.length} orders to CSV batch.` });
+    setMsg({ type: 'success', text: `Added ${newQueueEntries.length} orders to the batch.` });
   };
 
   const handleRemoveFromQueue = async (indexToRemove) => {
@@ -595,13 +1128,11 @@ export default function ShopifyFulfillment() {
 
     const updatedQueue = csvQueue.filter((_, idx) => idx !== indexToRemove);
     await saveQueueToDb(updatedQueue);
-    setSelectedExportIndices((prev) => prev.filter((i) => i !== indexToRemove));
   };
 
   const handleClearBatch = async () => {
     if (csvQueue.length === 0) return;
     await saveQueueToDb([]);
-    setSelectedExportIndices([]);
     setMsg({ type: 'success', text: 'Batch cleared. All orders returned to full view in Tab 1.' });
   };
 
@@ -682,16 +1213,7 @@ export default function ShopifyFulfillment() {
     await saveQueueToDb(newQueue);
 
     setSelectedOrderIds((prev) => prev.filter((id) => id !== order.saleId));
-    setMsg({ type: 'success', text: `Order ${order.orderName} added to CSV batch.` });
-  };
-
-  const handleSelectAllExport = () => setSelectedExportIndices(csvQueue.map((_, idx) => idx));
-  const handleUnselectAllExport = () => setSelectedExportIndices([]);
-
-  const toggleExportSelection = (index) => {
-    setSelectedExportIndices((prev) =>
-      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]
-    );
+    setMsg({ type: 'success', text: `Order ${order.orderName} added to the batch.` });
   };
 
   const handleUpdateQueueItem = (index, updatedFields) => {
@@ -700,184 +1222,10 @@ export default function ShopifyFulfillment() {
     saveQueueToDb(updatedQueue);
   };
 
-  const handleDimensionDropdownChange = (index, presetName) => {
-    const preset = DIM_PRESETS[presetName];
-    if (preset) {
-      handleUpdateQueueItem(index, {
-        length: preset.length,
-        width: preset.width,
-        height: preset.height,
-        presetName: presetName,
-      });
-    } else {
-      handleUpdateQueueItem(index, { presetName: 'Custom / Manual' });
-    }
-  };
-
-  const downloadSelectedAusPostCsv = () => {
-    if (selectedExportIndices.length === 0) return;
-
-    const selectedEntries = csvQueue.filter((_, idx) => selectedExportIndices.includes(idx));
-    const rows = [AUSPOST_CSV_COLUMNS.join(',')];
-
-    selectedEntries.forEach((entry) => {
-      const order = entry.order_data;
-      const addr = order.rawAddress || {};
-
-      const rowMap = {
-        'Row type': 'S',
-        'Sender account': senderAccount,
-        'Payer account': payerAccount || senderAccount,
-        'Recipient contact name': `"${order.customer}"`,
-        'Recipient address line 1': `"${addr.address1 || ''}"`,
-        'Recipient address line 2': `"${addr.address2 || ''}"`,
-        'Recipient suburb': `"${addr.city || ''}"`,
-        'Recipient state': `"${addr.provinceCode || ''}"`,
-        'Recipient postcode': `"${addr.zip || ''}"`,
-        'Send tracking email to recipient': order.email ? 'Yes' : 'No',
-        'Recipient email address': order.email || '',
-        'Recipient phone number': order.phone || '',
-        'Sender reference 1 ': order.orderName,
-        'Product id': entry.service,
-        'Quantity': 1,
-        'Weight': entry.weight,
-        'Length': entry.length,
-        'Width': entry.width,
-        'Height': entry.height,
-        'Parcel contents': ' ',
-      };
-
-      rows.push(AUSPOST_CSV_COLUMNS.map((col) => rowMap[col] || '').join(','));
-    });
-
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `auspost_shopify_${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-  };
-
-  const handleResultsCsvUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const lines = evt.target.result.split('\n').filter((l) => l.trim().length > 0);
-      if (lines.length < 2) return setMsg({ type: 'error', text: 'No data rows found in uploaded CSV.' });
-
-      const headers = lines[0].split(',').map((h) => h.trim().replace(/"/g, ''));
-      const refIdx = headers.findIndex((h) => h.toLowerCase().includes('sender reference') || h.toLowerCase().includes('reference'));
-      const trackingIdx = headers.findIndex((h) => h.toLowerCase().includes('connote') || h.toLowerCase().includes('tracking number') || h.toLowerCase().includes('article id'));
-      const urlIdx = headers.findIndex((h) => h.toLowerCase().includes('tracking url'));
-
-      const parsed = [];
-      for (let i = 1; i < lines.length; i++) {
-        const row = lines[i].split(',').map((c) => c.trim().replace(/"/g, ''));
-        const ref = row[refIdx];
-        const tracking = row[trackingIdx];
-        const url = urlIdx !== -1 && row[urlIdx] ? row[urlIdx] : `https://auspost.com.au/mypost/track/#/details/${tracking}`;
-
-        if (ref && tracking) parsed.push({ ref, tracking, url });
-      }
-
-      setImportResults(parsed);
-      setMsg({ type: 'success', text: `Extracted tracking numbers for ${parsed.length} orders.` });
-    };
-    reader.readAsText(file);
-  };
-
-  const handleExecuteShopifyFulfillment = async () => {
-    if (importResults.length === 0) return;
-
-    setImporting(true);
-    let successCount = 0;
-    const completedRefs = [];
-    const loggingFailures = [];
-
-    for (const item of importResults) {
-      const queueMatch = csvQueue.find((q) => q.order_data.orderName === item.ref);
-      if (!queueMatch) continue;
-
-      try {
-        const { data, error } = await supabase.functions.invoke('shopify-proxy', {
-          body: {
-            action: 'mark_fulfilled',
-            fulfillmentOrderId: queueMatch.order_data.fulfillmentOrderId,
-            lineItems: queueMatch.selected_items,
-            trackingNumber: item.tracking,
-            trackingUrl: item.url,
-          },
-        });
-
-        if (!error && data?.success) {
-          const loggedLocally = await saveShipmentToDb(
-            queueMatch.order_data.orderName,
-            '',
-            item.tracking,
-            queueMatch.service,
-            '',
-            '',
-            queueMatch.selected_items,
-            queueMatch.order_data
-          );
-
-          successCount++;
-          completedRefs.push(item.ref);
-          // Genuinely fulfilled in Shopify either way -- only note it
-          // here if the local Completed Orders log specifically failed,
-          // rather than silently losing that distinction the way this
-          // used to (loggedLocally was never checked before).
-          if (!loggedLocally) loggingFailures.push(item.ref);
-        }
-      } catch (e) {
-        await logError('handleExecuteShopifyFulfillment', e.message);
-      }
-    }
-
-    const remainingQueue = csvQueue.filter((q) => !completedRefs.includes(q.order_data.orderName));
-    await saveQueueToDb(remainingQueue);
-
-    const remainingOrders = orders.filter((o) => !completedRefs.includes(o.orderName));
-    setOrders(remainingOrders);
-    await saveOrdersToCache(remainingOrders);
-
-    await fetchCompletedHistory();
-
-    setMsg({
-      type: loggingFailures.length ? 'error' : 'success',
-      text: `Fulfillment Complete: ${successCount} orders fulfilled in Shopify.${
-        loggingFailures.length
-          ? ` ${loggingFailures.length} of these shipped fine but failed to log to Completed Orders (${loggingFailures.join(', ')}) -- check error_logs.`
-          : ''
-      }`,
-    });
-    setImporting(false);
-    setImportResults([]);
-  };
-
   return (
     <div className="space-y-4">
       {/* Top Settings Bar */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-        <div>
-          <label className="block font-bold text-slate-700 mb-1">AusPost Sender Account</label>
-          <input
-            type="text"
-            value={senderAccount}
-            onChange={(e) => setSenderAccount(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5 focus:bg-white"
-          />
-        </div>
-        <div>
-          <label className="block font-bold text-slate-700 mb-1">AusPost Payer Account</label>
-          <input
-            type="text"
-            value={payerAccount}
-            onChange={(e) => setPayerAccount(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5 focus:bg-white"
-          />
-        </div>
         <div>
           <label className="block font-bold text-slate-700 mb-1">Default Service</label>
           <select
@@ -912,20 +1260,36 @@ export default function ShopifyFulfillment() {
           1️⃣ Select Orders ({orders.length})
         </button>
         <button
-          onClick={() => setActiveTab('export')}
+          onClick={() => setActiveTab('validate')}
           className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
-            activeTab === 'export' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+            activeTab === 'validate' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          2️⃣ Export CSV ({csvQueue.length})
+          2️⃣ Validate & Price ({csvQueue.length})
         </button>
         <button
-          onClick={() => setActiveTab('import')}
+          onClick={() => setActiveTab('manifest')}
           className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
-            activeTab === 'import' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+            activeTab === 'manifest' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          3️⃣ Import Tracking
+          3️⃣ Create Label & Book Manifest
+        </button>
+        <button
+          onClick={() => { setActiveTab('manifests'); loadManifests(); }}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'manifests' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          4️⃣ Saved Manifests
+        </button>
+        <button
+          onClick={() => { setActiveTab('tracking'); loadTrackingRows(); }}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'tracking' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          5️⃣ Tracking
         </button>
         <button
           onClick={() => { setActiveTab('completed'); fetchCompletedHistory(); }}
@@ -933,7 +1297,7 @@ export default function ShopifyFulfillment() {
             activeTab === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          4️⃣ Completed Orders ({completedOrders.length})
+          6️⃣ Completed Orders ({completedOrders.length})
         </button>
       </div>
 
@@ -982,7 +1346,7 @@ export default function ShopifyFulfillment() {
                   disabled={selectedOrderIds.length === 0}
                   className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-1.5 rounded-md cursor-pointer disabled:opacity-50"
                 >
-                  ➕ Add Selected ({selectedOrderIds.length}) to CSV Batch
+                  ➕ Add Selected ({selectedOrderIds.length}) to Batch
                 </button>
               </div>
             </div>
@@ -1007,7 +1371,7 @@ export default function ShopifyFulfillment() {
                   >
                     <div className="flex items-center gap-3">
                       <span className="bg-blue-600 text-white font-bold px-2 py-0.5 rounded text-[10px]">
-                        IN CSV BATCH
+                        IN BATCH
                       </span>
                       <div>
                         <span className="font-bold text-slate-900">{order.orderName}</span>
@@ -1117,7 +1481,7 @@ export default function ShopifyFulfillment() {
                             onClick={() => handleQueueSingleOrder(order)}
                             className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 px-3 rounded-lg cursor-pointer h-9"
                           >
-                            ➕ CSV Batch
+                            ➕ Add to Batch
                           </button>
                         </div>
                       </div>
@@ -1130,177 +1494,493 @@ export default function ShopifyFulfillment() {
         </div>
       )}
 
-      {/* TAB 2: EXPORT CSV */}
-      {activeTab === 'export' && (
+      {/* TAB 2: VALIDATE & PRICE */}
+      {activeTab === 'validate' && (
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleSelectAllExport}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-1.5 rounded-md border border-slate-300 cursor-pointer"
-              >
-                Select All ({csvQueue.length})
-              </button>
-              <button
-                onClick={handleUnselectAllExport}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-1.5 rounded-md border border-slate-300 cursor-pointer"
-              >
-                Unselect All
-              </button>
-              <span className="text-xs text-slate-500 font-medium pl-2">
-                Selected: <strong className="text-blue-600">{selectedExportIndices.length}</strong> / {csvQueue.length}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleClearBatch}
-                className="bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs py-2 px-3 rounded-lg border border-red-200 cursor-pointer"
-              >
-                Clear Batch
-              </button>
-              <button
-                onClick={downloadSelectedAusPostCsv}
-                disabled={selectedExportIndices.length === 0}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50"
-              >
-                ⬇️ Download Selected CSV ({selectedExportIndices.length})
-              </button>
-            </div>
-          </div>
-
           {csvQueue.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400">
-              No orders queued in batch. Select orders from Tab 1 and click "Add Selected to CSV Batch".
+              No orders queued. Select orders from Tab 1 and click "Add Selected to Batch".
             </div>
           ) : (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-700">{csvQueue.length} order(s) in batch</span>
+                  <button
+                    onClick={() => setSelectedForLabel(csvQueue.map((e) => e.order_data.orderName))}
+                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    onClick={() => setSelectedForLabel([])}
+                    className="text-[11px] font-bold text-slate-500 hover:text-slate-700 cursor-pointer"
+                  >
+                    Unselect All
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCheckAllQueued}
+                    disabled={checkingAll}
+                    className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50"
+                  >
+                    {checkingAll ? 'Checking...' : '✅ Re-check All'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const eligible = selectedForLabel.filter((n) => !processState[n]?.shipmentId);
+                      if (eligible.length === 0) return;
+                      if (!window.confirm(`Send ${eligible.length} order(s) back to Tab 1?`)) return;
+                      setSendingBack(true);
+                      await handleRemoveMultipleFromQueue(eligible);
+                      setSelectedForLabel((prev) => prev.filter((n) => !eligible.includes(n)));
+                      setSendingBack(false);
+                    }}
+                    disabled={sendingBack || selectedForLabel.length === 0}
+                    className="bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50 border border-slate-300"
+                  >
+                    {sendingBack ? 'Sending...' : `↩️ Send Back to Tab 1 (${selectedForLabel.length})`}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const entries = csvQueue.filter((e) => selectedForLabel.includes(e.order_data.orderName));
+                      if (entries.length === 0) return;
+                      setCreatingLabels(true);
+                      await handleCreateShipmentAndLabel(entries);
+                      setCreatingLabels(false);
+                    }}
+                    disabled={creatingLabels || selectedForLabel.length === 0}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50"
+                  >
+                    {creatingLabels ? 'Creating...' : `📦 Create Label (${selectedForLabel.length})`}
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
+                      <th className="p-3 w-8"></th>
+                      <th className="p-3">Order Number</th>
+                      <th className="p-3">Customer</th>
+                      <th className="p-3">Address</th>
+                      <th className="p-3">Service</th>
+                      <th className="p-3">L × W × H (cm)</th>
+                      <th className="p-3">Weight (kg)</th>
+                      <th className="p-3">Address Check</th>
+                      <th className="p-3">Price</th>
+                      <th className="p-3 text-center">Label Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {csvQueue.map((entry, idx) => {
+                      const order = entry.order_data;
+                      const orderNumber = order.orderName;
+                      const addr = order.rawAddress || {};
+                      const check = checkResults[orderNumber];
+                      const isInternational = entry.service === INTL_PRODUCT_ID;
+                      const alreadyCreated = !!processState[orderNumber]?.shipmentId;
+
+                      return (
+                        <tr key={idx} className="hover:bg-slate-50/80">
+                          <td className="p-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedForLabel.includes(orderNumber)}
+                              onChange={() => setSelectedForLabel((prev) => (prev.includes(orderNumber) ? prev.filter((n) => n !== orderNumber) : [...prev, orderNumber]))}
+                              disabled={alreadyCreated}
+                            />
+                          </td>
+                          <td className="p-3 font-bold text-slate-900">{orderNumber}</td>
+                          <td className="p-3 text-slate-700">{order.customer || '—'}</td>
+                          <td className="p-3 text-slate-600">
+                            {addr.address1 || ''}, {addr.city || ''} {addr.provinceCode || ''} {addr.zip || ''}
+                          </td>
+                          <td className="p-3">
+                            <select
+                              value={entry.service}
+                              onChange={(e) => { handleUpdateQueueItem(idx, { service: e.target.value }); autoCheckedRef.current.delete(orderNumber); }}
+                              className="text-xs bg-white border border-slate-300 rounded px-2 py-1"
+                            >
+                              {Object.entries(SERVICE_OPTIONS).map(([k, v]) => (
+                                <option key={v} value={v}>{k}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="p-3">
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={entry.length}
+                                onChange={(e) => { handleUpdateQueueItem(idx, { length: parseFloat(e.target.value) || 0, presetName: 'Custom / Manual' }); autoCheckedRef.current.delete(orderNumber); }}
+                                className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
+                              />
+                              <span className="text-slate-400">×</span>
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={entry.width}
+                                onChange={(e) => { handleUpdateQueueItem(idx, { width: parseFloat(e.target.value) || 0, presetName: 'Custom / Manual' }); autoCheckedRef.current.delete(orderNumber); }}
+                                className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
+                              />
+                              <span className="text-slate-400">×</span>
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={entry.height}
+                                onChange={(e) => { handleUpdateQueueItem(idx, { height: parseFloat(e.target.value) || 0, presetName: 'Custom / Manual' }); autoCheckedRef.current.delete(orderNumber); }}
+                                className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
+                              />
+                            </div>
+                          </td>
+                          <td className="p-3">
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={entry.weight}
+                              onChange={(e) => { handleUpdateQueueItem(idx, { weight: parseFloat(e.target.value) || 0 }); autoCheckedRef.current.delete(orderNumber); }}
+                              className="w-16 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
+                            />
+                          </td>
+                          <td className="p-3">
+                            {!check && <span className="text-slate-400">Checking...</span>}
+                            {check?.checking && <span className="text-slate-400">Checking...</span>}
+                            {check && !check.checking && isInternational && (
+                              <span className="text-slate-400">N/A (international)</span>
+                            )}
+                            {check && !check.checking && !isInternational && check.addressError && (
+                              <span className="text-red-600 font-bold" title={check.addressError}>⚠️ Error</span>
+                            )}
+                            {check && !check.checking && !isInternational && !check.addressError && check.addressValid && (
+                              <span className="text-emerald-600 font-bold">✅ Valid</span>
+                            )}
+                            {check && !check.checking && !isInternational && !check.addressError && check.addressValid === false && (
+                              <div>
+                                <span className="text-red-600 font-bold">❌ Needs a different address</span>
+                                {check.addressSuggestions.length > 0 && (
+                                  <div className="text-[10px] text-slate-500 mt-0.5">
+                                    Did you mean: {check.addressSuggestions.slice(0, 3).join(', ')}?
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            {check?.priceError && <span className="text-red-600 font-bold" title={check.priceError}>⚠️ Error</span>}
+                            {check && !check.checking && check.price != null && (
+                              <span className="font-bold text-slate-900">${Number(check.price).toFixed(2)}</span>
+                            )}
+                          </td>
+                          <td className="p-3 text-center">
+                            {(() => {
+                              const s = processState[orderNumber] || {};
+                              if (s.error) return <span className="text-red-600 font-bold text-[11px]" title={s.error}>⚠️ Failed -- hover for details</span>;
+                              if (s.stage === 'creating_shipment') return <span className="text-slate-400 text-[11px]">Creating shipment...</span>;
+                              if (s.stage === 'creating_label') return <span className="text-slate-400 text-[11px]">Creating label...</span>;
+                              if (alreadyCreated) return <span className="text-emerald-600 font-bold text-[11px]">✅ Label created</span>;
+                              return <span className="text-slate-400 text-[11px]">Not yet</span>;
+                            })()}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: CREATE LABEL & BOOK MANIFEST */}
+      {activeTab === 'manifest' && (() => {
+        const orderNumberOf = (entry) => entry.order_data.orderName;
+        const readyQueue = csvQueue.filter((entry) => !!processState[orderNumberOf(entry)]?.shipmentId);
+
+        if (readyQueue.length === 0) {
+          return (
+            <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-xs text-slate-400 shadow-xs">
+              No labelled shipments yet. Create labels for orders in Tab 2 first.
+            </div>
+          );
+        }
+
+        const stageLabel = (stage) => {
+          switch (stage) {
+            case 'shipment_created': return { text: 'Shipment created', color: 'text-slate-600' };
+            case 'label_created': return { text: '✅ Label ready', color: 'text-emerald-600' };
+            case 'booked': return { text: '✅ Manifest booked', color: 'text-emerald-600' };
+            case 'complete': return { text: '✅ Complete -- Shopify updated', color: 'text-emerald-700 font-bold' };
+            case 'error': return { text: '⚠️ Error', color: 'text-red-600 font-bold' };
+            default: return { text: stage || '—', color: 'text-slate-500' };
+          }
+        };
+
+        return (
+          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-700">{readyQueue.length} labelled order(s)</span>
+                <button onClick={() => setSelectedManifestNumbers(readyQueue.map(orderNumberOf))} className="text-[11px] font-bold text-blue-600 hover:text-blue-800 cursor-pointer">Select All</button>
+                <button onClick={() => setSelectedManifestNumbers([])} className="text-[11px] font-bold text-slate-500 hover:text-slate-700 cursor-pointer">Unselect All</button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={orderReference}
+                  onChange={(e) => setOrderReference(e.target.value)}
+                  placeholder="Manifest reference"
+                  className="text-xs bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5 w-44"
+                />
+                <button
+                  onClick={async () => {
+                    const entries = readyQueue.filter((entry) => selectedManifestNumbers.includes(orderNumberOf(entry)));
+                    if (entries.length === 0) return;
+                    if (!window.confirm(`Delete ${entries.length} shipment(s) and their labels? This returns the order(s) to Tab 1.`)) return;
+                    setManifestBusy(true);
+                    await handleDeleteShipment(entries);
+                    setSelectedManifestNumbers([]);
+                    setManifestBusy(false);
+                  }}
+                  disabled={manifestBusy || selectedManifestNumbers.length === 0}
+                  className="bg-red-600 hover:bg-red-700 text-white font-bold text-xs py-2 px-3 rounded-md cursor-pointer disabled:opacity-50"
+                >
+                  🗑️ Delete Shipment ({selectedManifestNumbers.length})
+                </button>
+                <button
+                  onClick={async () => {
+                    const entries = readyQueue.filter((entry) => selectedManifestNumbers.includes(orderNumberOf(entry)));
+                    if (entries.length === 0) return;
+                    setManifestBusy(true);
+                    await handleCreateManifestAndComplete(entries, orderReference);
+                    setSelectedManifestNumbers([]);
+                    setManifestBusy(false);
+                  }}
+                  disabled={manifestBusy || selectedManifestNumbers.length === 0}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50"
+                >
+                  {manifestBusy ? 'Working...' : `📮 Create Manifest (${selectedManifestNumbers.length})`}
+                </button>
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
-                    <th className="p-3 w-10 text-center">Select</th>
+                    <th className="p-3 w-8"></th>
                     <th className="p-3">Order Number</th>
                     <th className="p-3">Customer</th>
                     <th className="p-3">Service</th>
-                    <th className="p-3">Box Dimension Preset</th>
-                    <th className="p-3">L x W x H (cm)</th>
-                    <th className="p-3">Weight (kg)</th>
-                    <th className="p-3 text-center">Action</th>
+                    <th className="p-3">Tracking Number</th>
+                    <th className="p-3">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {csvQueue.map((entry, idx) => {
-                    const isChecked = selectedExportIndices.includes(idx);
-                    const order = entry.order_data;
+                  {readyQueue.map((entry, idx) => {
+                    const orderNumber = orderNumberOf(entry);
+                    const s = processState[orderNumber] || {};
+                    const label = stageLabel(s.stage);
+                    const alreadyBooked = !!s.orderId;
 
                     return (
-                      <tr key={idx} className={`hover:bg-slate-50/80 ${isChecked ? 'bg-blue-50/30' : ''}`}>
-                        <td className="p-3 text-center">
+                      <tr key={idx} className="hover:bg-slate-50/80">
+                        <td className="p-3">
                           <input
                             type="checkbox"
-                            checked={isChecked}
-                            onChange={() => toggleExportSelection(idx)}
-                            className="w-4 h-4 text-blue-600 border-slate-300 rounded cursor-pointer"
+                            checked={selectedManifestNumbers.includes(orderNumber)}
+                            onChange={() => setSelectedManifestNumbers((prev) => (prev.includes(orderNumber) ? prev.filter((n) => n !== orderNumber) : [...prev, orderNumber]))}
+                            disabled={alreadyBooked}
                           />
                         </td>
-
-                        <td className="p-3 font-bold text-slate-900">{order.orderName}</td>
-
                         <td className="p-3">
-                          <div className="font-semibold text-slate-800">{order.customer}</div>
-                          <div className="text-[10px] text-slate-500 truncate max-w-[180px]">{order.address}</div>
-                        </td>
-
-                        <td className="p-3">
-                          <select
-                            value={entry.service}
-                            onChange={(e) => handleUpdateQueueItem(idx, { service: e.target.value })}
-                            className="text-xs bg-white border border-slate-300 rounded px-2 py-1"
-                          >
-                            <option value="3D55">Parcel Post (3D55)</option>
-                            <option value="3J55">Express Post (3J55)</option>
-                          </select>
-                        </td>
-
-                        <td className="p-3">
-                          <select
-                            value={entry.presetName || 'Custom / Manual'}
-                            onChange={(e) => handleDimensionDropdownChange(idx, e.target.value)}
-                            className="text-xs bg-white border border-slate-300 rounded px-2 py-1 max-w-[180px]"
-                          >
-                            {Object.keys(DIM_PRESETS).map((preset) => (
-                              <option key={preset} value={preset}>
-                                {preset}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-
-                        <td className="p-3">
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              step="0.1"
-                              value={entry.length}
-                              onChange={(e) =>
-                                handleUpdateQueueItem(idx, {
-                                  length: parseFloat(e.target.value) || 0,
-                                  presetName: 'Custom / Manual',
-                                })
-                              }
-                              className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
-                            />
-                            <span className="text-slate-400">×</span>
-                            <input
-                              type="number"
-                              step="0.1"
-                              value={entry.width}
-                              onChange={(e) =>
-                                handleUpdateQueueItem(idx, {
-                                  width: parseFloat(e.target.value) || 0,
-                                  presetName: 'Custom / Manual',
-                                })
-                              }
-                              className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
-                            />
-                            <span className="text-slate-400">×</span>
-                            <input
-                              type="number"
-                              step="0.1"
-                              value={entry.height}
-                              onChange={(e) =>
-                                handleUpdateQueueItem(idx, {
-                                  height: parseFloat(e.target.value) || 0,
-                                  presetName: 'Custom / Manual',
-                                })
-                              }
-                              className="w-12 text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-center"
-                            />
-                          </div>
-                        </td>
-
-                        <td className="p-3">
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0.01"
-                            value={entry.weight}
-                            onChange={(e) =>
-                              handleUpdateQueueItem(idx, { weight: parseFloat(e.target.value) || 0.1 })
-                            }
-                            className="w-20 text-xs bg-white border border-slate-300 rounded px-2 py-1 text-right font-semibold text-slate-800"
-                          />
-                        </td>
-
-                        <td className="p-3 text-center">
                           <button
-                            onClick={() => handleRemoveFromQueue(idx)}
-                            title="Remove from batch and expand in Tab 1"
-                            className="text-slate-400 hover:text-red-600 font-bold p-1 cursor-pointer text-sm"
+                            onClick={async () => { setRedownloadingFor(orderNumber); await handleRedownloadLabel(entry); setRedownloadingFor(null); }}
+                            disabled={redownloadingFor === orderNumber || !s.labelRequestId}
+                            className="font-bold text-blue-600 hover:text-blue-800 cursor-pointer disabled:opacity-50 disabled:text-slate-400"
+                            title="Click to re-download this order's label"
                           >
-                            ✕
+                            {redownloadingFor === orderNumber ? 'Downloading...' : orderNumber}
                           </button>
                         </td>
+                        <td className="p-3 text-slate-700">{entry.order_data.customer || '—'}</td>
+                        <td className="p-3 text-slate-600">{entry.service}</td>
+                        <td className="p-3 font-mono text-slate-600">{s.trackingNumber || '—'}</td>
+                        <td className="p-3">
+                          <span className={label.color} title={s.error || ''}>{label.text}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* TAB 4: SAVED MANIFESTS */}
+      {activeTab === 'manifests' && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-xs">
+          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-700">Saved Manifests {manifests.length ? `(${manifests.length})` : ''}</span>
+            <button
+              onClick={loadManifests}
+              disabled={manifestsLoading}
+              className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-1.5 px-3 rounded-md cursor-pointer disabled:opacity-50"
+            >
+              {manifestsLoading ? 'Loading...' : '🔄 Refresh'}
+            </button>
+          </div>
+
+          {manifestsError && (
+            <div className="m-3 p-2.5 bg-red-50 border border-red-200 text-red-700 text-[11px] rounded-md">
+              Couldn't load manifests: {manifestsError}
+            </div>
+          )}
+
+          {!manifestsError && !manifestsLoading && manifests.length === 0 && (
+            <div className="p-8 text-center text-xs text-slate-400">
+              No manifests booked yet. They'll appear here automatically once you book one in Tab 3.
+            </div>
+          )}
+
+          <div className="divide-y divide-slate-100">
+            {manifests.map((m) => {
+              const isExpanded = expandedManifestId === m.order_id;
+              return (
+                <div key={m.order_id}>
+                  <button
+                    onClick={() => setExpandedManifestId(isExpanded ? null : m.order_id)}
+                    className="w-full text-left px-4 py-3 hover:bg-slate-50 cursor-pointer flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-900">
+                        {m.order_id} {m.order_reference ? `· ${m.order_reference}` : ''}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {m.created_at ? new Date(m.created_at).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'} · {m.number_of_shipments ?? '—'} shipment(s), {m.number_of_items ?? '—'} item(s)
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-sm font-bold text-slate-900">{m.total_cost == null ? '—' : `$${Number(m.total_cost).toFixed(2)}`}</span>
+                      <span className="text-slate-400 text-xs font-bold">{isExpanded ? '▲' : '▼'}</span>
+                    </div>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="px-4 pb-4">
+                      <table className="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                          <tr className="bg-slate-50 border-y border-slate-200 text-slate-600 font-bold">
+                            <th className="p-2">Order Reference</th>
+                            <th className="p-2">Shipment ID</th>
+                            <th className="p-2 text-center">Label</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {(m.shipments || []).map((s) => {
+                            const key = `${m.order_id}_${s.shipment_id}`;
+                            return (
+                              <tr key={s.shipment_id}>
+                                <td className="p-2 font-semibold text-slate-800">{s.shipment_reference || '—'}</td>
+                                <td className="p-2 font-mono text-slate-500">{s.shipment_id}</td>
+                                <td className="p-2 text-center">
+                                  {s.label_storage_path ? (
+                                    <>
+                                      <button
+                                        onClick={() => handleDownloadLabel(m.order_id, s.shipment_id)}
+                                        disabled={downloadingKey === key}
+                                        className="text-blue-600 hover:text-blue-800 font-bold cursor-pointer disabled:opacity-50"
+                                      >
+                                        {downloadingKey === key ? '...' : '📄 Download'}
+                                      </button>
+                                      {downloadError[key] && <div className="text-red-600 mt-0.5">{downloadError[key]}</div>}
+                                    </>
+                                  ) : (
+                                    <span className="text-slate-400">Expired (48hr limit)</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: TRACKING */}
+      {activeTab === 'tracking' && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-xs">
+          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold text-slate-700">Tracking {trackingRows.length ? `(${trackingRows.length})` : ''}</span>
+            <div className="flex items-center gap-2">
+              <input
+                value={trackingSearchTerm}
+                onChange={(e) => setTrackingSearchTerm(e.target.value)}
+                placeholder="Search order or tracking #"
+                className="text-[11px] bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5 w-52"
+              />
+              <button
+                onClick={loadTrackingRows}
+                disabled={trackingLoading}
+                className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-1.5 px-3 rounded-md cursor-pointer disabled:opacity-50"
+              >
+                {trackingLoading ? 'Loading...' : '🔄 Refresh'}
+              </button>
+              <button
+                onClick={handleCheckTrackingStatus}
+                disabled={checkingStatus || visibleTrackingRows.length === 0}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-1.5 px-3 rounded-md cursor-pointer disabled:opacity-50"
+              >
+                {checkingStatus ? 'Checking...' : `📍 Check Status (${visibleTrackingRows.length})`}
+              </button>
+            </div>
+          </div>
+
+          {trackingError && (
+            <div className="m-3 p-2.5 bg-red-50 border border-red-200 text-red-700 text-[11px] rounded-md">
+              Couldn't load tracking data: {trackingError}
+            </div>
+          )}
+
+          {!trackingError && !trackingLoading && trackingRows.length === 0 && (
+            <div className="p-8 text-center text-xs text-slate-400">
+              No tracked shipments yet. They'll appear here automatically once a manifest is booked in Tab 3.
+            </div>
+          )}
+
+          {trackingRows.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
+                    <th className="p-3">Order Number</th>
+                    <th className="p-3">Customer</th>
+                    <th className="p-3">Tracking Number</th>
+                    <th className="p-3">Booked</th>
+                    <th className="p-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {visibleTrackingRows.map((r) => {
+                    const status = statusResults[r.trackingNumber];
+                    const color = !status ? 'text-slate-400' : status.toLowerCase().includes('delivered') ? 'text-emerald-600 font-bold' : status.toLowerCase().includes('error') ? 'text-red-600 font-bold' : 'text-slate-700 font-semibold';
+                    return (
+                      <tr key={r.trackingNumber} className="hover:bg-slate-50/80">
+                        <td className="p-3 font-bold text-slate-900">{r.orderReference}</td>
+                        <td className="p-3 text-slate-700">{r.customerName}</td>
+                        <td className="p-3 font-mono text-slate-600">{r.trackingNumber}</td>
+                        <td className="p-3 text-slate-500">{r.bookedAt ? new Date(r.bookedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}</td>
+                        <td className={`p-3 ${color}`}>{status || 'Not checked'}</td>
                       </tr>
                     );
                   })}
@@ -1311,20 +1991,7 @@ export default function ShopifyFulfillment() {
         </div>
       )}
 
-      {/* TAB 3: IMPORT TRACKING */}
-      {activeTab === 'import' && (
-        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-4">
-          <label className="block text-xs font-bold text-slate-700">Upload Australia Post / Courier Result CSV File</label>
-          <input type="file" accept=".csv" onChange={handleResultsCsvUpload} className="block w-full text-xs text-slate-500" />
-          {importResults.length > 0 && (
-            <button onClick={handleExecuteShopifyFulfillment} disabled={importing} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2 px-4 rounded-lg h-9 cursor-pointer">
-              {importing ? 'Fulfilling in Shopify...' : `✅ Fulfill ${importResults.length} Orders in Shopify`}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* TAB 4: COMPLETED ORDERS */}
+      {/* TAB 6: COMPLETED ORDERS */}
       {activeTab === 'completed' && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-4">
           <table className="w-full text-left text-xs border-collapse">
