@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
-import AusPostValidateTab from './AusPostValidateTab';
+import AusPostValidateTab from './Auspostvalidatetab';
+import AusPostManifestTab from './Auspostmanifesttab';
+import AusPostSavedManifestsTab from './Auspostsavedmanifeststab';
+import AusPostTrackingTab from './Ausposttrackingtab';
 import { normaliseCountryCode, INTL_SENDER_BUSINESS, INTL_SENDER_EMAIL, INTL_PRODUCT_ID, INTL_REASON_FOR_EXPORT, INTL_ITEM_ORIGIN, INTL_ITEM_DESCRIPTION, INTL_ITEM_HS_CODE } from './auspostConstants';
 
 const AUSPOST_CSV_COLUMNS = [
@@ -847,9 +850,30 @@ export default function Cin7Fulfillment() {
         >
           2️⃣ Validate & Price ({csvQueue.length})
         </button>
-        {/* Tabs 3-5 (Create Label & Book Manifest, Saved Manifests,
-            Tracking) go here once built -- the numbering below is
-            already set up for that, not a mistake. */}
+        <button
+          onClick={() => setActiveTab('manifest')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'manifest' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          3️⃣ Create Label & Book Manifest
+        </button>
+        <button
+          onClick={() => setActiveTab('manifests')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'manifests' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          4️⃣ Saved Manifests
+        </button>
+        <button
+          onClick={() => setActiveTab('tracking')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'tracking' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          5️⃣ Tracking
+        </button>
         <button
           onClick={() => setActiveTab('export')}
           className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
@@ -1030,6 +1054,21 @@ export default function Cin7Fulfillment() {
       {/* TAB 2: VALIDATE & PRICE */}
       {activeTab === 'validate' && (
         <AusPostValidateTab csvQueue={csvQueue} onUpdateQueueItem={handleUpdateQueueItem} />
+      )}
+
+      {/* TAB 3: CREATE LABEL & BOOK MANIFEST */}
+      {activeTab === 'manifest' && (
+        <AusPostManifestTab csvQueue={csvQueue} />
+      )}
+
+      {/* TAB 4: SAVED MANIFESTS */}
+      {activeTab === 'manifests' && (
+        <AusPostSavedManifestsTab />
+      )}
+
+      {/* TAB 5: TRACKING */}
+      {activeTab === 'tracking' && (
+        <AusPostTrackingTab />
       )}
 
       {/* TAB 6: EXPORT CSV */}
