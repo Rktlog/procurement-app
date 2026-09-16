@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from './supabaseClient';
-import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode } from './auspostConstants';
+import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode } from './Auspostconstants';
 
 // Tab 2: Validate & Price. Receives the queued batch (built in Tab 1)
 // and the shared update handler as props -- csvQueue itself stays
