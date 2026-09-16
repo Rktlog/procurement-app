@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
+import AusPostValidateTab from './AusPostValidateTab';
+import { normaliseCountryCode, INTL_SENDER_BUSINESS, INTL_SENDER_EMAIL, INTL_PRODUCT_ID, INTL_REASON_FOR_EXPORT, INTL_ITEM_ORIGIN, INTL_ITEM_DESCRIPTION, INTL_ITEM_HS_CODE } from './auspostConstants';
 
 const AUSPOST_CSV_COLUMNS = [
   'Row type', 'Sender account', 'Payer account', 'Recipient contact name',
@@ -35,31 +37,6 @@ const AUSPOST_INTL_COLUMNS = [
   'Item - Description', 'Item - Origin', 'Item - HS tariff code',
   'Deliver wine to addressee only', 'Schedule 8 or medicinal cannabis',
 ];
-
-// Fixed per-business settings for international shipments. Same values
-// already used in this account's existing working implementation.
-const INTL_SENDER_BUSINESS = 'Rocket Logistics';
-const INTL_SENDER_EMAIL = 'logistics@rocketlog.com.au';
-const INTL_PRODUCT_ID = 'PTI7';
-const INTL_REASON_FOR_EXPORT = 'Commercial Sale of Goods (B2B)';
-const INTL_ITEM_ORIGIN = 'US';
-const INTL_ITEM_DESCRIPTION = 'Pantone Color Guide Book';
-const INTL_ITEM_HS_CODE = '9609100919';
-
-const COUNTRY_CODE_MAP = {
-  'NEW ZEALAND': 'NZ', 'NZ': 'NZ',
-  'AUSTRALIA': 'AU', 'AU': 'AU',
-  'UNITED STATES': 'US', 'USA': 'US', 'UNITED STATES OF AMERICA': 'US',
-};
-
-// AusPost's international template wants a country CODE, not a full name.
-function normaliseCountryCode(rawCountry) {
-  const key = (rawCountry || '').trim().toUpperCase();
-  if (COUNTRY_CODE_MAP[key]) return COUNTRY_CODE_MAP[key];
-  if (!key) return 'NZ'; // default destination for these shipments
-  if (key.length === 2) return key; // already looks like a code
-  return rawCountry;
-}
 
 const DIM_PRESETS = {
   '20 x 25 x 5 (Default)': { length: 20.0, width: 25.0, height: 5.0 },
@@ -114,6 +91,7 @@ export default function Cin7Fulfillment() {
   const [activeTab, setActiveTab] = useState('select');
   const [expandedSaleIds, setExpandedSaleIds] = useState(new Set());
   const [sales, setSales] = useState([]);
+  const [hiddenCount, setHiddenCount] = useState(0);
   const [selectedSaleIds, setSelectedSaleIds] = useState([]);
   const [csvQueue, setCsvQueue] = useState([]);
   const [selectedExportIndices, setSelectedExportIndices] = useState([]);
@@ -189,6 +167,7 @@ export default function Cin7Fulfillment() {
       // a temporary snooze.
       const { data: hiddenRows } = await supabase.from('pantone_hidden_orders').select('order_number');
       const hiddenOrderNumbers = new Set((hiddenRows || []).map((r) => r.order_number));
+      setHiddenCount(hiddenOrderNumbers.size);
 
       if (!error && data) {
         const visible = (data.orders_data || []).filter(
@@ -216,9 +195,30 @@ export default function Cin7Fulfillment() {
       });
       if (error) throw error;
       setSales((prev) => prev.filter((s) => (s.OrderNumber || s.orderName) !== orderNumber));
+      setHiddenCount((prev) => prev + 1);
       setMsg({ type: 'success', text: `${orderNumber} hidden from this list.` });
     } catch (err) {
       setMsg({ type: 'error', text: `Failed to hide order: ${err.message}` });
+    }
+  };
+
+  // Restores every manually-hidden order at once -- equivalent to
+  // `delete from pantone_hidden_orders;`, run through the app instead
+  // of needing direct SQL access each time. The JS client requires an
+  // explicit filter on delete (no unrestricted delete allowed), so
+  // .neq('order_number', '') matches every real row, since a genuine
+  // order number is never an empty string.
+  const handleUnhideAll = async () => {
+    if (hiddenCount === 0) return;
+    if (!window.confirm(`Restore all ${hiddenCount} hidden order(s) back to this list?`)) return;
+    try {
+      const { error } = await supabase.from('pantone_hidden_orders').delete().neq('order_number', '');
+      if (error) throw error;
+      setHiddenCount(0);
+      setMsg({ type: 'success', text: 'All hidden orders restored. Reloading list...' });
+      await loadCachedSales();
+    } catch (err) {
+      setMsg({ type: 'error', text: `Failed to restore hidden orders: ${err.message}` });
     }
   };
 
@@ -374,13 +374,25 @@ export default function Cin7Fulfillment() {
     const lines = sale.Lines || sale.lines || [];
     const specs = calculateOrderPackageSpecs(lines);
 
+    // International takes priority over the domestic carrier-based
+    // detection -- DetectedService only ever distinguishes Parcel Post
+    // vs Express Post (see detectRequestedService in cin7-proxy), it
+    // has no concept of international at all. Same isInternational
+    // check already proven in the export table below, applied here so
+    // a genuinely international order is never defaulted to a domestic
+    // service that would fail validation.
+    const addr = sale.ShippingAddress || sale.rawAddress || {};
+    const country = (addr.Country || '').trim().toUpperCase();
+    const isInternational = country && country !== 'AUSTRALIA' && country !== 'AU';
+
     return {
       order_data: { ...sale },
       // Auto-detected from DEAR's carrier/shipping-method fields when
       // available (see detectRequestedService in cin7-proxy), same
       // fallback pattern Shopify already uses -- falls back to whatever
       // is set in the Default Service dropdown when DEAR has no signal.
-      service: sale.DetectedService || defaultService,
+      // Still fully editable afterward in the table below.
+      service: isInternational ? INTL_PRODUCT_ID : (sale.DetectedService || defaultService),
       weight: specs.weight,
       length: specs.length,
       width: specs.width,
@@ -804,6 +816,17 @@ export default function Cin7Fulfillment() {
             {loading ? 'Syncing...' : '🔄 Sync Pantone Sales (auto every 30m)'}
           </button>
         </div>
+        {hiddenCount > 0 && (
+          <div className="flex items-end">
+            <button
+              onClick={handleUnhideAll}
+              title="Restore every order you've manually removed from this list"
+              className="w-full bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs py-2 px-3 rounded-md cursor-pointer h-9 border border-slate-300"
+            >
+              ↩️ Restore {hiddenCount} Hidden Order{hiddenCount === 1 ? '' : 's'}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Navigation Sub-Tabs */}
@@ -817,12 +840,23 @@ export default function Cin7Fulfillment() {
           1️⃣ Select Pantone Orders ({sales.length})
         </button>
         <button
+          onClick={() => setActiveTab('validate')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'validate' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          2️⃣ Validate & Price ({csvQueue.length})
+        </button>
+        {/* Tabs 3-5 (Create Label & Book Manifest, Saved Manifests,
+            Tracking) go here once built -- the numbering below is
+            already set up for that, not a mistake. */}
+        <button
           onClick={() => setActiveTab('export')}
           className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
             activeTab === 'export' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          2️⃣ Pantone Export CSV ({csvQueue.length})
+          6️⃣ Pantone Export CSV ({csvQueue.length})
         </button>
         <button
           onClick={() => setActiveTab('import')}
@@ -830,7 +864,7 @@ export default function Cin7Fulfillment() {
             activeTab === 'import' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          3️⃣ Import Tracking
+          7️⃣ Import Tracking
         </button>
         <button
           onClick={() => { setActiveTab('completed'); fetchCompletedHistory(); }}
@@ -838,7 +872,7 @@ export default function Cin7Fulfillment() {
             activeTab === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          4️⃣ Completed Orders ({completedOrders.length})
+          8️⃣ Completed Orders ({completedOrders.length})
         </button>
       </div>
 
@@ -993,7 +1027,12 @@ export default function Cin7Fulfillment() {
         </div>
       )}
 
-      {/* TAB 2: EXPORT CSV */}
+      {/* TAB 2: VALIDATE & PRICE */}
+      {activeTab === 'validate' && (
+        <AusPostValidateTab csvQueue={csvQueue} onUpdateQueueItem={handleUpdateQueueItem} />
+      )}
+
+      {/* TAB 6: EXPORT CSV */}
       {activeTab === 'export' && (
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
@@ -1090,6 +1129,7 @@ export default function Cin7Fulfillment() {
                           >
                             <option value="3D55">Parcel Post (3D55)</option>
                             <option value="3J55">Express Post (3J55)</option>
+                            <option value="PTI7">International (PTI7)</option>
                           </select>
                         </td>
 
