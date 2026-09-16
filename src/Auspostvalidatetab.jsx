@@ -188,6 +188,7 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
             <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
               <th className="p-3 w-8"></th>
               <th className="p-3">Order Number</th>
+              <th className="p-3">Customer</th>
               <th className="p-3">Address</th>
               <th className="p-3">Service</th>
               <th className="p-3">L × W × H (cm)</th>
@@ -217,6 +218,7 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
                     />
                   </td>
                   <td className="p-3 font-bold text-slate-900">{orderNumber}</td>
+                  <td className="p-3 text-slate-700">{order.Customer || order.customer || '—'}</td>
                   <td className="p-3 text-slate-600">
                     {addr.Line1 || ''}, {addr.City || ''} {addr.State || ''} {addr.Postcode || ''}
                   </td>

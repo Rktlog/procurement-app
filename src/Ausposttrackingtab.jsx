@@ -37,6 +37,7 @@ export default function AusPostTrackingTab() {
           if (s.tracking_number) {
             flattened.push({
               orderReference: s.shipment_reference || '—',
+              customerName: s.customer_name || '—',
               trackingNumber: s.tracking_number,
               orderId: m.order_id,
               bookedAt: m.created_at,
@@ -54,7 +55,11 @@ export default function AusPostTrackingTab() {
   const visibleRows = rows.filter((r) => {
     if (!searchTerm.trim()) return true;
     const q = searchTerm.toLowerCase();
-    return r.orderReference.toLowerCase().includes(q) || r.trackingNumber.toLowerCase().includes(q);
+    return (
+      r.orderReference.toLowerCase().includes(q) ||
+      r.trackingNumber.toLowerCase().includes(q) ||
+      (r.customerName || '').toLowerCase().includes(q)
+    );
   });
 
   const handleCheckStatus = async () => {
@@ -160,6 +165,7 @@ export default function AusPostTrackingTab() {
             <thead>
               <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
                 <th className="p-3">Order Number</th>
+                <th className="p-3">Customer</th>
                 <th className="p-3">Tracking Number</th>
                 <th className="p-3">Booked</th>
                 <th className="p-3">Status</th>
@@ -169,6 +175,7 @@ export default function AusPostTrackingTab() {
               {visibleRows.map((r) => (
                 <tr key={r.trackingNumber} className="hover:bg-slate-50/80">
                   <td className="p-3 font-bold text-slate-900">{r.orderReference}</td>
+                  <td className="p-3 text-slate-700">{r.customerName}</td>
                   <td className="p-3 font-mono text-slate-600">{r.trackingNumber}</td>
                   <td className="p-3 text-slate-500">{fmtDate(r.bookedAt)}</td>
                   <td className={`p-3 ${statusColor(statusResults[r.trackingNumber])}`}>

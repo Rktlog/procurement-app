@@ -110,6 +110,7 @@ export default function AusPostManifestTab({ csvQueue, processState, onRedownloa
             <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
               <th className="p-3 w-8"></th>
               <th className="p-3">Order Number</th>
+              <th className="p-3">Customer</th>
               <th className="p-3">Service</th>
               <th className="p-3">Tracking Number</th>
               <th className="p-3">Status</th>
@@ -142,6 +143,7 @@ export default function AusPostManifestTab({ csvQueue, processState, onRedownloa
                       {redownloadingFor === orderNumber ? 'Downloading...' : orderNumber}
                     </button>
                   </td>
+                  <td className="p-3 text-slate-700">{entry.order_data.Customer || entry.order_data.customer || '—'}</td>
                   <td className="p-3 text-slate-600">{entry.service}</td>
                   <td className="p-3 font-mono text-slate-600">{s.trackingNumber || '—'}</td>
                   <td className="p-3">

@@ -332,7 +332,7 @@ export default function Cin7Fulfillment() {
     await saveQueueToDb(updatedQueue);
 
     setSelectedSaleIds([]);
-    setMsg({ type: 'success', text: `Added ${newQueueEntries.length} Pantone sales to CSV batch.` });
+    setMsg({ type: 'success', text: `Added ${newQueueEntries.length} Pantone sale(s) to the batch. Continue in Tab 2 to validate and price them.` });
   };
 
   const handleRemoveFromQueue = async (indexToRemove) => {
@@ -599,11 +599,13 @@ export default function Cin7Fulfillment() {
       });
       const labelRequestIds = {};
       const labelUrls = {};
+      const customerNames = {};
       readyEntries.forEach((entry) => {
         const orderNumber = entry.order_data.OrderNumber || entry.order_data.orderName;
         const s = getProcessState(orderNumber);
         labelRequestIds[s.shipmentId] = s.labelRequestId;
         labelUrls[s.shipmentId] = s.labelUrl;
+        customerNames[s.shipmentId] = entry.order_data.Customer || entry.order_data.customer || null;
       });
 
       const orderData = await callAusPostAction({
@@ -612,6 +614,7 @@ export default function Cin7Fulfillment() {
         auspostOrderReference: orderReference,
         auspostLabelRequestIds: labelRequestIds,
         auspostLabelUrls: labelUrls,
+        auspostCustomerNames: customerNames,
       });
       const orderId = orderData.result?.order?.order_id || null;
 
@@ -853,7 +856,7 @@ export default function Cin7Fulfillment() {
                   >
                     <div className="flex items-center gap-3">
                       <span className="bg-purple-600 text-white font-bold px-2 py-0.5 rounded text-[10px]">
-                        IN CSV BATCH
+                        IN BATCH
                       </span>
                       <div>
                         <span className="font-bold text-slate-900">{sale.OrderNumber}</span>
