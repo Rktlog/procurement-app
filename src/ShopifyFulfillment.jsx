@@ -1659,11 +1659,30 @@ export default function ShopifyFulfillment() {
                             )}
                             {check && !check.checking && !isInternational && !check.addressError && check.addressValid === false && (
                               <div>
-                                <span className="text-red-600 font-bold">❌ Needs a different address</span>
-                                {check.addressSuggestions.length > 0 && (
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
-                                    Did you mean: {check.addressSuggestions.slice(0, 3).join(', ')}?
-                                  </div>
+                                <span className="text-red-600 font-bold">❌ Wrong suburb</span>
+                                {check.addressSuggestions.length > 0 ? (
+                                  <select
+                                    defaultValue=""
+                                    onChange={(e) => {
+                                      const correctedSuburb = e.target.value;
+                                      if (!correctedSuburb) return;
+                                      handleUpdateQueueItem(idx, {
+                                        order_data: {
+                                          ...order,
+                                          rawAddress: { ...(order.rawAddress || {}), city: correctedSuburb },
+                                        },
+                                      });
+                                      autoCheckedRef.current.delete(orderNumber);
+                                    }}
+                                    className="mt-1 text-[10px] bg-white border border-slate-300 rounded px-1.5 py-1 w-full"
+                                  >
+                                    <option value="" disabled>Select correct suburb...</option>
+                                    {check.addressSuggestions.slice(0, 8).map((s) => (
+                                      <option key={s} value={s}>{s}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <div className="text-[10px] text-slate-500 mt-0.5">No suggestions available -- check the postcode.</div>
                                 )}
                               </div>
                             )}
