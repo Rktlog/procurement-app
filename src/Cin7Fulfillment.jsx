@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
+import { PDFDocument } from 'pdf-lib';
 import AusPostValidateTab from './Auspostvalidatetab';
 import AusPostManifestTab from './Auspostmanifesttab';
 import AusPostSavedManifestsTab from './Auspostsavedmanifeststab';
@@ -398,7 +399,11 @@ export default function Cin7Fulfillment() {
   // earlier tonight, and a server-to-server request sidesteps that
   // entirely rather than depending on the asset host sending the right
   // CORS headers for a browser request.
-  const downloadFileFromUrl = async (url, filename) => {
+  // Fetches a PDF's raw bytes via the server-side proxy WITHOUT
+  // triggering a download -- used when multiple PDFs need to be
+  // collected and merged into one combined file, rather than each
+  // downloaded individually.
+  const fetchPdfBytes = async (url) => {
     const { data, error } = await supabase.functions.invoke('cin7-proxy', {
       body: { action: 'fetch_pdf_data_uri', pdfUrl: url },
     });
@@ -408,8 +413,32 @@ export default function Cin7Fulfillment() {
     const byteChars = atob(data.dataUri.split(',')[1]);
     const byteNumbers = new Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
-    const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'application/pdf' });
+    return new Uint8Array(byteNumbers);
+  };
 
+  // Merges multiple single-page (or multi-page) PDFs into one combined
+  // file and triggers one download -- real PDF page concatenation via
+  // pdf-lib, not just bundling files together.
+  const mergePdfsAndDownload = async (pdfByteArrays, filename) => {
+    const mergedPdf = await PDFDocument.create();
+    for (const bytes of pdfByteArrays) {
+      const pdf = await PDFDocument.load(bytes);
+      const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+      copiedPages.forEach((page) => mergedPdf.addPage(page));
+    }
+    const mergedBytes = await mergedPdf.save();
+    const blob = new Blob([mergedBytes], { type: 'application/pdf' });
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  const downloadFileFromUrl = async (url, filename) => {
+    const bytes = await fetchPdfBytes(url);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
     const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = objectUrl;
@@ -449,6 +478,11 @@ export default function Cin7Fulfillment() {
   // processState, nothing further needs to happen for it to "move"
   // there).
   const handleCreateShipmentAndLabel = async (entries) => {
+    // Collected here instead of downloading per-order -- merged into
+    // one combined PDF at the end, so a bulk selection produces one
+    // file with every label in it, not N separate downloads.
+    const collectedPdfBytes = [];
+
     for (const entry of entries) {
       const order = entry.order_data;
       const orderNumber = order.OrderNumber || order.orderName;
@@ -513,13 +547,27 @@ export default function Cin7Fulfillment() {
 
         if (label?.url) {
           try {
-            await downloadFileFromUrl(label.url, `${orderNumber}_label.pdf`);
+            const bytes = await fetchPdfBytes(label.url);
+            collectedPdfBytes.push(bytes);
           } catch (downloadErr) {
-            updateProcessState(orderNumber, { error: `Label created but download failed: ${downloadErr.message}` });
+            updateProcessState(orderNumber, { error: `Label created but couldn't be added to the combined PDF: ${downloadErr.message}` });
           }
         }
       } catch (err) {
         updateProcessState(orderNumber, { stage: 'error', error: err.message });
+      }
+    }
+
+    // One combined download at the end -- only for whatever genuinely
+    // succeeded. A partial batch (some orders failed) still produces a
+    // real, usable file for the ones that worked, rather than an
+    // all-or-nothing merge.
+    if (collectedPdfBytes.length > 0) {
+      try {
+        const dateStamp = new Date().toISOString().slice(0, 10);
+        await mergePdfsAndDownload(collectedPdfBytes, `labels_${dateStamp}_${collectedPdfBytes.length}.pdf`);
+      } catch (mergeErr) {
+        setMsg({ type: 'error', text: `Labels were created, but merging them into one PDF failed: ${mergeErr.message}` });
       }
     }
   };
