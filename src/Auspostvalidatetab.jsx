@@ -268,11 +268,16 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
                     )}
                   </td>
                   <td className="p-3 text-center">
-                    {alreadyCreated ? (
-                      <span className="text-emerald-600 font-bold text-[11px]">✅ Label created</span>
-                    ) : (
-                      <span className="text-slate-400 text-[11px]">Not yet</span>
-                    )}
+                    {(() => {
+                      const s = processState[orderNumber] || {};
+                      if (s.error) {
+                        return <span className="text-red-600 font-bold text-[11px]" title={s.error}>⚠️ Failed -- hover for details</span>;
+                      }
+                      if (s.stage === 'creating_shipment') return <span className="text-slate-400 text-[11px]">Creating shipment...</span>;
+                      if (s.stage === 'creating_label') return <span className="text-slate-400 text-[11px]">Creating label...</span>;
+                      if (alreadyCreated) return <span className="text-emerald-600 font-bold text-[11px]">✅ Label created</span>;
+                      return <span className="text-slate-400 text-[11px]">Not yet</span>;
+                    })()}
                   </td>
                 </tr>
               );

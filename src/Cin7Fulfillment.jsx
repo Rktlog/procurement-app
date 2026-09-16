@@ -377,10 +377,24 @@ export default function Cin7Fulfillment() {
   // Forces a genuine browser download rather than just opening the PDF
   // in a new tab -- fetches the bytes and triggers an anchor click,
   // same pattern already used elsewhere in this codebase (CreateInvoice.jsx).
+  // Routed through the server-side proxy rather than fetching the PDF
+  // URL directly from the browser -- AusPost's signed label/asset URLs
+  // can be blocked by CORS the same way Shopify's CDN images were
+  // earlier tonight, and a server-to-server request sidesteps that
+  // entirely rather than depending on the asset host sending the right
+  // CORS headers for a browser request.
   const downloadFileFromUrl = async (url, filename) => {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to fetch file for download (HTTP ${res.status})`);
-    const blob = await res.blob();
+    const { data, error } = await supabase.functions.invoke('cin7-proxy', {
+      body: { action: 'fetch_pdf_data_uri', pdfUrl: url },
+    });
+    if (error) throw error;
+    if (!data.success) throw new Error(data.error);
+
+    const byteChars = atob(data.dataUri.split(',')[1]);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'application/pdf' });
+
     const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = objectUrl;
