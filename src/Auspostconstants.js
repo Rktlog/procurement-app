@@ -25,16 +25,24 @@ export const INTL_ITEM_HS_CODE = '9609100919';
 // account 0005303796) -- used as the "from" for every AusPost address
 // validation, pricing check, and shipment creation.
 export const SENDER_ADDRESS = {
-  // Real, confirmed registered business name from tonight's actual
-  // production Get Accounts response for account 0005303796. Missing
-  // entirely before -- Get Shipment Price didn't need it (pricing
-  // doesn't care who's sending), but Create Shipment does, which is
-  // why shipment creation failed with a missing-field error while
-  // pricing worked fine using this same object.
+  // Real, confirmed registered business name and street address from
+  // tonight's actual production Get Accounts response for account
+  // 0005303796. Both were missing entirely before -- Get Shipment
+  // Price didn't need them (pricing doesn't care who's sending or
+  // their exact street address), but Create Shipment requires both,
+  // which is why shipment creation kept failing one missing-field
+  // error at a time while pricing worked fine using this same object.
   name: 'Rocket Logistics Australia Pty Ltd',
+  lines: ['26-28 Scammel St'],
   suburb: 'CAMPBELLFIELD',
   state: 'VIC',
   postcode: '3061',
+  // Real confirmed email from tonight's Get Accounts response. Phone
+  // is a placeholder (no real one was ever returned by Get Accounts to
+  // confirm) -- worth replacing with the business's actual number if
+  // AusPost ever rejects this specific value.
+  email: 'ops@seaga.com.au',
+  phone: '0400000000',
 };
 
 export const COUNTRY_CODE_MAP = {
