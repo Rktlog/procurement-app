@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
-import AusPostValidateTab from './AusPostValidateTab';
-import AusPostManifestTab from './AusPostManifestTab';
-import AusPostSavedManifestsTab from './AusPostSavedManifestsTab';
-import AusPostTrackingTab from './AusPostTrackingTab';
-import { INTL_PRODUCT_ID } from './auspostConstants';
+import AusPostValidateTab from './Auspostvalidatetab';
+import AusPostManifestTab from './Auspostmanifesttab';
+import AusPostSavedManifestsTab from './Auspostsavedmanifeststab';
+import AusPostTrackingTab from './Ausposttrackingtab';
+import { INTL_PRODUCT_ID } from './Auspostconstants';
 
 const DIM_PRESETS = {
   '20 x 25 x 5 (Default)': { length: 20.0, width: 25.0, height: 5.0 },
