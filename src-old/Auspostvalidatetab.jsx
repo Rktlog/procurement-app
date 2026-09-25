@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode } from './Auspostconstants';
-import AddressEditor from './AddressEditor';
 
 // Tab 2: Validate & Price. Auto-checks every queued order's address and
 // price as soon as it arrives (or changes) -- no manual "Check" click
@@ -15,8 +14,6 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
   const [selectedNumbers, setSelectedNumbers] = useState([]);
   const [creatingLabels, setCreatingLabels] = useState(false);
   const [sendingBack, setSendingBack] = useState(false);
-  // Order number whose full address editor is open (one at a time).
-  const [editingNumber, setEditingNumber] = useState(null);
 
   // Tracks which order numbers have already been auto-checked once, so
   // arriving/edited entries get checked without re-checking everything
@@ -89,15 +86,6 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
     setCheckResults((prev) => ({ ...prev, [orderNumber]: result }));
   };
 
-  // Saves an edited order back into the batch and re-checks it straight
-  // away. (The auto-check effect only fires when the batch size changes,
-  // so an edit on its own would otherwise sit unchecked.)
-  const applyOrderEdit = (idx, entry, updatedOrder) => {
-    onUpdateQueueItem(idx, { order_data: updatedOrder });
-    autoCheckedRef.current.add(orderNumberOf(entry));
-    handleCheckEntry({ ...entry, order_data: updatedOrder });
-  };
-
   const handleCheckAllQueued = async () => {
     if (csvQueue.length === 0) return;
     setCheckingAll(true);
@@ -146,7 +134,7 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
   const handleSendBackToTab1 = async () => {
     const eligible = selectedNumbers.filter((n) => !processState[n]?.shipmentId);
     if (eligible.length === 0) return;
-    if (!window.confirm(`Send ${eligible.length} order(s) back to step 1?`)) return;
+    if (!window.confirm(`Send ${eligible.length} order(s) back to Tab 1?`)) return;
     setSendingBack(true);
     await onRemoveFromQueue(eligible);
     setSelectedNumbers((prev) => prev.filter((n) => !eligible.includes(n)));
@@ -156,7 +144,7 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
   if (csvQueue.length === 0) {
     return (
       <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-xs text-slate-400 shadow-xs">
-        No orders queued. Select orders in step 1 and click "Add Selected to Batch".
+        No orders queued. Select orders from Tab 1 and click "Add Selected to Batch".
       </div>
     );
   }
@@ -182,7 +170,7 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
             disabled={sendingBack || selectedNumbers.length === 0}
             className="bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50 border border-slate-300"
           >
-            {sendingBack ? 'Sending...' : `↩️ Send Back to Step 1 (${selectedNumbers.length})`}
+            {sendingBack ? 'Sending...' : `↩️ Send Back to Tab 1 (${selectedNumbers.length})`}
           </button>
           <button
             onClick={handleCreateLabelsForSelected}
@@ -220,8 +208,7 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
               const alreadyCreated = !!processState[orderNumber]?.shipmentId;
 
               return (
-                <React.Fragment key={idx}>
-                <tr className={editingNumber === orderNumber ? 'bg-blue-50/60' : 'hover:bg-slate-50/80'}>
+                <tr key={idx} className="hover:bg-slate-50/80">
                   <td className="p-3">
                     <input
                       type="checkbox"
@@ -232,19 +219,8 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
                   </td>
                   <td className="p-3 font-bold text-slate-900">{orderNumber}</td>
                   <td className="p-3 text-slate-700">{order.Customer || order.customer || '—'}</td>
-                  <td className="p-3 text-slate-600 min-w-[14rem]">
-                    <div>{[addr.Line1, addr.Line2, addr.Line3].filter(Boolean).join(', ') || 'No street address'}</div>
-                    <div>{[addr.City, addr.State, addr.Postcode].filter(Boolean).join(' ')}{isInternational && addr.Country ? `, ${addr.Country}` : ''}</div>
-                    {!alreadyCreated && (
-                      <button
-                        type="button"
-                        onClick={() => setEditingNumber(editingNumber === orderNumber ? null : orderNumber)}
-                        aria-expanded={editingNumber === orderNumber}
-                        className="mt-1 text-[0.78rem] font-semibold text-blue-700 hover:underline cursor-pointer"
-                      >
-                        {editingNumber === orderNumber ? 'Close editor' : 'Edit address'}
-                      </button>
-                    )}
+                  <td className="p-3 text-slate-600">
+                    {addr.Line1 || ''}, {addr.City || ''} {addr.State || ''} {addr.Postcode || ''}
                   </td>
                   <td className="p-3">
                     <select
@@ -307,10 +283,13 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
                             onChange={(e) => {
                               const correctedSuburb = e.target.value;
                               if (!correctedSuburb) return;
-                              applyOrderEdit(idx, entry, {
-                                ...order,
-                                ShippingAddress: { ...(order.ShippingAddress || order.rawAddress || {}), City: correctedSuburb },
+                              onUpdateQueueItem(idx, {
+                                order_data: {
+                                  ...order,
+                                  ShippingAddress: { ...(order.ShippingAddress || order.rawAddress || {}), City: correctedSuburb },
+                                },
                               });
+                              autoCheckedRef.current.delete(orderNumber);
                             }}
                             className="mt-1 text-[10px] bg-white border border-slate-300 rounded px-1.5 py-1 w-full"
                           >
@@ -321,15 +300,6 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
                           </select>
                         ) : (
                           <div className="text-[10px] text-slate-500 mt-0.5">No suggestions available -- check the postcode.</div>
-                        )}
-                        {!alreadyCreated && editingNumber !== orderNumber && (
-                          <button
-                            type="button"
-                            onClick={() => setEditingNumber(orderNumber)}
-                            className="mt-1 block text-[0.78rem] font-semibold text-blue-700 hover:underline cursor-pointer"
-                          >
-                            Whole address wrong? Edit it
-                          </button>
                         )}
                       </div>
                     )}
@@ -353,23 +323,6 @@ export default function AusPostValidateTab({ csvQueue, onUpdateQueueItem, proces
                     })()}
                   </td>
                 </tr>
-                {editingNumber === orderNumber && (
-                  <tr className="bg-blue-50/60">
-                    <td colSpan={10} className="px-3 pb-4 pt-1">
-                      <AddressEditor
-                        order={order}
-                        isInternational={isInternational}
-                        suburbSuggestions={check?.addressSuggestions || []}
-                        onCancel={() => setEditingNumber(null)}
-                        onSave={(updatedOrder) => {
-                          applyOrderEdit(idx, entry, updatedOrder);
-                          setEditingNumber(null);
-                        }}
-                      />
-                    </td>
-                  </tr>
-                )}
-                </React.Fragment>
               );
             })}
           </tbody>

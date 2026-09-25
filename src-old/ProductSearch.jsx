@@ -54,6 +54,11 @@ export default function ProductSearch() {
     <div className="space-y-6">
       {/* Search Bar Card */}
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">🔍 Product & Stock Search</h2>
+          <p className="text-xs text-slate-500">Search by SKU or item name to view stock levels and sales history</p>
+        </div>
+
         <form onSubmit={handleSubmit} className="flex gap-3">
           <input
             type="text"

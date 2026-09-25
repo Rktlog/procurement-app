@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { useStepParam } from './app/useStepParam';
-import StepBar from './layout/StepBar';
 import { supabase } from './supabaseClient';
 import { PDFDocument } from 'pdf-lib';
 import AusPostValidateTab from './Auspostvalidatetab';
 import AusPostManifestTab from './Auspostmanifesttab';
 import AusPostSavedManifestsTab from './Auspostsavedmanifeststab';
 import AusPostTrackingTab from './Ausposttrackingtab';
-import { INTL_PRODUCT_ID, SENDER_ADDRESS, SENDER_ADDRESS_INTL, buildInternationalItem, checkInternationalTo, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
+import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
 
 const DIM_PRESETS = {
   '20 x 25 x 5 (Default)': { length: 20.0, width: 25.0, height: 5.0 },
@@ -18,19 +16,21 @@ const DIM_PRESETS = {
 };
 
 export default function Cin7Fulfillment() {
-  const [activeTab, setActiveTab] = useStepParam('select', ['select', 'validate', 'manifest', 'manifests', 'tracking']);
+  const [activeTab, setActiveTab] = useState('select');
   const [expandedSaleIds, setExpandedSaleIds] = useState(new Set());
   const [sales, setSales] = useState([]);
   const [hiddenCount, setHiddenCount] = useState(0);
   const [selectedSaleIds, setSelectedSaleIds] = useState([]);
   const [csvQueue, setCsvQueue] = useState([]);
+  const [completedOrders, setCompletedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [msg, setMsg] = useState(null);
 
   const [defaultService, setDefaultService] = useState('3D55');
 
-  // Shared between step 2 (creates shipments/labels) and step 3 (books
+  // Shared between Tab 2 (creates shipments/labels) and Tab 3 (books
   // manifests, deletes, re-downloads labels) -- lifted up here rather
   // than living inside one tab, since both genuinely need to read and
   // write the same per-order process state now.
@@ -45,6 +45,7 @@ export default function Cin7Fulfillment() {
     // rate against Cin7's 60/min limit for no benefit.
     fetchQueueFromDb();
     loadCachedSales();
+    fetchCompletedHistory();
   }, []);
 
   const filterAndSortSales = (rawSales) => {
@@ -178,6 +179,24 @@ export default function Cin7Fulfillment() {
     }, { onConflict: 'user_id, source' });
   };
 
+  // Reads this app's own completion log -- not the shared shipments/
+  // orders tables, which are the Shopify side's (orders has shopify_id/
+  // fulfillment_order_id columns, and a shipments row requires a
+  // matching orders row via foreign key). Pantone orders live in
+  // sales/sale_lines, not orders, so writing into shipments was never
+  // actually possible for this flow -- which is the real reason
+  // "Completed Orders" has always been empty regardless of how many
+  // orders were actually shipped.
+  const fetchCompletedHistory = async () => {
+    setLoadingHistory(true);
+    const { data, error } = await supabase
+      .from('fulfillment_history')
+      .select('*')
+      .order('shipped_at', { ascending: false });
+
+    if (!error && data) setCompletedOrders(data);
+    setLoadingHistory(false);
+  };
 
   // Manual "Sync" button. Calls the SAME sync action pg_cron calls on its
   // 30-minute schedule -- this guarantees the button and the background
@@ -314,7 +333,7 @@ export default function Cin7Fulfillment() {
     await saveQueueToDb(updatedQueue);
 
     setSelectedSaleIds([]);
-    setMsg({ type: 'success', text: `Added ${newQueueEntries.length} Pantone sale(s) to the batch. Continue in step 2 to validate and price them.` });
+    setMsg({ type: 'success', text: `Added ${newQueueEntries.length} Pantone sale(s) to the batch. Continue in Tab 2 to validate and price them.` });
   };
 
   const handleRemoveFromQueue = async (indexToRemove) => {
@@ -325,7 +344,7 @@ export default function Cin7Fulfillment() {
     await saveQueueToDb(updatedQueue);
   };
 
-  // Bulk-safe version for step 2's "Send back to step 1" -- computes the
+  // Bulk-safe version for Tab 2's "Send back to Tab 1" -- computes the
   // full removal against one snapshot of csvQueue in a single update,
   // rather than calling handleRemoveFromQueue repeatedly in a loop
   // (which would see a stale csvQueue between calls, since React state
@@ -337,13 +356,13 @@ export default function Cin7Fulfillment() {
       return !orderNumbers.includes(orderNumber);
     });
     await saveQueueToDb(updatedQueue);
-    setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to step 1.` });
+    setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to Tab 1.` });
   };
 
   const handleClearBatch = async () => {
     if (csvQueue.length === 0) return;
     await saveQueueToDb([]);
-    setMsg({ type: 'success', text: 'Batch cleared. All Pantone orders returned to full view in step 1.' });
+    setMsg({ type: 'success', text: 'Batch cleared. All Pantone orders returned to full view in Tab 1.' });
   };
 
   const handleUpdateQueueItem = (index, updatedFields) => {
@@ -353,7 +372,7 @@ export default function Cin7Fulfillment() {
   };
 
   // ===========================================================
-  // Shared AusPost process state + handlers (step 2 + step 3)
+  // Shared AusPost process state + handlers (Tab 2 + Tab 3)
   // ===========================================================
   const getProcessState = (orderNumber) => processState[orderNumber] || {};
   const updateProcessState = (orderNumber, patch) => {
@@ -451,11 +470,11 @@ export default function Cin7Fulfillment() {
     };
   };
 
-  // step 2's "Create Label" action: creates the AusPost shipment, then
+  // Tab 2's "Create Label" action: creates the AusPost shipment, then
   // immediately creates its label (A6), then forces a real download of
   // the label PDF. Only processes entries that don't already have a
   // shipment -- safe to re-run on a partially-completed batch. Once
-  // done, the order naturally appears in step 3 (same csvQueue +
+  // done, the order naturally appears in Tab 3 (same csvQueue +
   // processState, nothing further needs to happen for it to "move"
   // there).
   const handleCreateShipmentAndLabel = async (entries) => {
@@ -474,34 +493,6 @@ export default function Cin7Fulfillment() {
         const isInternational = entry.service === INTL_PRODUCT_ID;
         const toAddress = buildSafeToAddress(order, isInternational);
 
-        // Domestic: plain parcel. International: same parcel plus the
-        // customs declaration AusPost requires (see buildInternationalItem).
-        const domesticItem = {
-          item_reference: orderNumber,
-          product_id: entry.service,
-          length: String(entry.length),
-          width: String(entry.width),
-          height: String(entry.height),
-          weight: String(entry.weight),
-        };
-        let shipmentItem = domesticItem;
-        if (isInternational) {
-          const toError = checkInternationalTo(toAddress);
-          if (toError) throw new Error(toError);
-          // Packed lines from Cin7: Quantity is what's physically in this
-          // box, Price is the unit sale price, Weight is kg per unit.
-          const contents = (order.Lines || order.lines || []).map((l) => ({
-            sku: l.SKU,
-            description: l.Name,
-            quantity: l.Quantity,
-            unitValue: l.Price,
-            unitWeight: l.Weight,
-          }));
-          const intl = buildInternationalItem({ reference: orderNumber, entry, contents });
-          if (intl.error) throw new Error(intl.error);
-          shipmentItem = intl.item;
-        }
-
         const shipData = await callAusPostAction({
           action: 'create_auspost_shipment',
           auspostShipments: [
@@ -513,9 +504,18 @@ export default function Cin7Fulfillment() {
               // reference. Order number goes here specifically, per
               // spec.
               customer_reference_1: truncateField(orderNumber, 50),
-              from: isInternational ? SENDER_ADDRESS_INTL : SENDER_ADDRESS,
+              from: SENDER_ADDRESS,
               to: toAddress,
-              items: [shipmentItem],
+              items: [
+                {
+                  item_reference: orderNumber,
+                  product_id: entry.service,
+                  length: String(entry.length),
+                  width: String(entry.width),
+                  height: String(entry.height),
+                  weight: String(entry.weight),
+                },
+              ],
             },
           ],
         });
@@ -572,7 +572,7 @@ export default function Cin7Fulfillment() {
     }
   };
 
-  // step 3's re-download -- for a shipment not yet booked into a
+  // Tab 3's re-download -- for a shipment not yet booked into a
   // manifest, the label URL from creation may have expired, so this
   // re-fetches a fresh one from AusPost directly via the stored
   // request_id (the Get Label action), rather than assuming the
@@ -592,11 +592,11 @@ export default function Cin7Fulfillment() {
     }
   };
 
-  // step 3's "Delete Shipment": deletes the real AusPost shipment
+  // Tab 3's "Delete Shipment": deletes the real AusPost shipment
   // (removes the label with it -- AusPost has no separate "delete
   // label" call, deleting the shipment is what clears both), then
   // clears local process state, then removes the order from csvQueue
-  // entirely -- which is what makes it reappear in step 1, since step 1
+  // entirely -- which is what makes it reappear in Tab 1, since Tab 1
   // filters out anything currently queued.
   const handleDeleteShipment = async (entries) => {
     const successfullyDeleted = [];
@@ -625,12 +625,12 @@ export default function Cin7Fulfillment() {
     if (successfullyDeleted.length > 0) await handleRemoveMultipleFromQueue(successfullyDeleted);
   };
 
-  // step 3's "Create Manifest": books the manifest (seals every ready
+  // Tab 3's "Create Manifest": books the manifest (seals every ready
   // shipment into one real AusPost order), downloads the real order
   // summary PDF (A4 -- this is simply what that endpoint returns, no
   // separate size parameter exists for it), then updates DEAR for each
   // shipment via fulfill_sale, then removes completed entries from the
-  // active batch -- their job here is done, step 4 holds the permanent
+  // active batch -- their job here is done, Tab 4 holds the permanent
   // record from this point on.
   const handleCreateManifestAndComplete = async (entries, orderReference) => {
     const readyEntries = entries.filter((entry) => {
@@ -746,7 +746,6 @@ export default function Cin7Fulfillment() {
     }
   };
 
-
   return (
     <div className="space-y-4">
       {/* Top Settings Bar */}
@@ -768,7 +767,7 @@ export default function Cin7Fulfillment() {
             disabled={loading}
             className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-2 px-3 rounded-md cursor-pointer h-9"
           >
-            {loading ? 'Syncing...' : '🔄 Sync Pantone sales'}
+            {loading ? 'Syncing...' : '🔄 Sync Pantone Sales (auto every 30m)'}
           </button>
         </div>
         {hiddenCount > 0 && (
@@ -784,20 +783,57 @@ export default function Cin7Fulfillment() {
         )}
       </div>
 
-      {/* Workflow steps (step lives in the URL: ?step=validate) */}
-      <StepBar
-        active={activeTab}
-        onChange={(id) => {
-          setActiveTab(id);
-        }}
-        steps={[
-          { id: 'select', label: 'Select orders', count: sales.length },
-          { id: 'validate', label: 'Validate & price', count: csvQueue.length },
-          { id: 'manifest', label: 'Label & manifest' },
-          { id: 'manifests', label: 'Saved manifests' },
-          { id: 'tracking', label: 'Tracking' },
-        ]}
-      />
+      {/* Navigation Sub-Tabs */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs flex gap-1 flex-wrap">
+        <button
+          onClick={() => setActiveTab('select')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'select' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          1️⃣ Select Pantone Orders ({sales.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('validate')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'validate' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          2️⃣ Validate & Price ({csvQueue.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('manifest')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'manifest' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          3️⃣ Create Label & Book Manifest
+        </button>
+        <button
+          onClick={() => setActiveTab('manifests')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'manifests' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          4️⃣ Saved Manifests
+        </button>
+        <button
+          onClick={() => setActiveTab('tracking')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'tracking' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          5️⃣ Tracking
+        </button>
+        <button
+          onClick={() => { setActiveTab('completed'); fetchCompletedHistory(); }}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          6️⃣ Completed Orders ({completedOrders.length})
+        </button>
+      </div>
 
       {msg && (
         <div className={`p-3 text-xs rounded-lg border ${
@@ -876,7 +912,7 @@ export default function Cin7Fulfillment() {
                       </div>
                     </div>
                     <span className="text-slate-400 italic text-[11px]">
-                      Queued in step 2
+                      Queued in Tab 2
                     </span>
                   </div>
                 );
@@ -982,6 +1018,35 @@ export default function Cin7Fulfillment() {
         <AusPostTrackingTab />
       )}
 
+      {/* TAB 6: COMPLETED ORDERS */}
+      {activeTab === 'completed' && (
+        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-4">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead className="bg-slate-50 border-b">
+              <tr>
+                <th className="p-2">Shipped Date</th>
+                <th className="p-2">Order #</th>
+                <th className="p-2">Customer</th>
+                <th className="p-2">Tracking Number</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {completedOrders.map((i) => (
+                <tr key={i.id}>
+                  <td className="p-2">{i.shipped_at ? new Date(i.shipped_at).toLocaleString() : 'N/A'}</td>
+                  <td className="p-2 font-bold text-purple-600">{i.order_name || 'N/A'}</td>
+                  <td className="p-2">{i.customer_name || 'N/A'}</td>
+                  <td className="p-2 font-mono">
+                    <a href={`https://auspost.com.au/mypost/track/#/details/${i.tracking_number}`} target="_blank" rel="noreferrer" className="text-purple-600 hover:underline">
+                      {i.tracking_number} ↗
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

@@ -122,9 +122,12 @@ export default function Settings() {
 
   return (
     <div className="space-y-6">
-      {/* Section tabs */}
-      <div>
-        <div className="flex border-b border-rule gap-6 text-sm font-semibold">
+      {/* Header */}
+      <div className="bg-white border border-slate-200/80 p-6 rounded-2xl shadow-sm">
+        <h2 className="text-lg font-bold text-slate-900">⚙️ System Settings</h2>
+        <p className="text-xs text-slate-500">Configure vendor shipping lead times and credentials</p>
+
+        <div className="flex border-b border-slate-200 mt-4 gap-6 text-xs font-bold">
           <button
             onClick={() => setActiveTab('lead_times')}
             className={`pb-2.5 transition-colors cursor-pointer ${activeTab === 'lead_times' ? 'border-b-2 border-blue-600 text-blue-700' : 'text-slate-400 hover:text-slate-700'}`}

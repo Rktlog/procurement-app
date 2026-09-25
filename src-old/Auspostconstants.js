@@ -48,19 +48,13 @@ export const SENDER_ADDRESS = {
   // confirm) -- worth replacing with the business's actual number if
   // AusPost ever rejects this specific value.
   email: 'ops@seaga.com.au',
-  phone: '0394509500',
+  phone: '0400000000',
 };
 
 export const COUNTRY_CODE_MAP = {
   'NEW ZEALAND': 'NZ', 'NZ': 'NZ',
   'AUSTRALIA': 'AU', 'AU': 'AU',
   'UNITED STATES': 'US', 'USA': 'US', 'UNITED STATES OF AMERICA': 'US',
-  'UNITED KINGDOM': 'GB', 'UK': 'GB', 'GREAT BRITAIN': 'GB', 'ENGLAND': 'GB', 'SCOTLAND': 'GB', 'WALES': 'GB',
-  'CANADA': 'CA', 'SINGAPORE': 'SG', 'HONG KONG': 'HK', 'CHINA': 'CN', 'JAPAN': 'JP',
-  'SOUTH KOREA': 'KR', 'KOREA': 'KR', 'TAIWAN': 'TW', 'MALAYSIA': 'MY', 'INDONESIA': 'ID',
-  'THAILAND': 'TH', 'PHILIPPINES': 'PH', 'VIETNAM': 'VN', 'INDIA': 'IN', 'FIJI': 'FJ',
-  'PAPUA NEW GUINEA': 'PG', 'GERMANY': 'DE', 'FRANCE': 'FR', 'ITALY': 'IT', 'SPAIN': 'ES',
-  'NETHERLANDS': 'NL', 'IRELAND': 'IE', 'UNITED ARAB EMIRATES': 'AE', 'UAE': 'AE',
 };
 
 // AusPost's international template wants a country CODE, not a full name.
@@ -87,7 +81,7 @@ export const AUSPOST_ADDRESS_LINE_OTHER_MAX = 60;
 // addresses, so this is a plain cut to the limit.
 export function truncateField(value, maxLen = AUSPOST_NAME_MAX) {
   const s = (value || '').toString().trim();
-  return s.length > maxLen ? s.slice(0, maxLen).trimEnd() : s;
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
 }
 
 // Splits a full address string into up to 3 AusPost address lines,
@@ -138,88 +132,3 @@ export function buildAddressLines(fullAddress) {
 
   return lines.filter(Boolean);
 }
-
-// ===================================================================
-// International customs declaration
-// ===================================================================
-// Every international parcel needs a customs declaration on the item:
-// what it is (item_description), why it's being sent
-// (classification_type + commercial_value) and one item_contents row per
-// product in the box. Domestic parcels never get any of this.
-//
-// contents: [{ sku, description, quantity, unitValue, unitWeight }]
-// unitValue is the AUD sale price of ONE unit, unitWeight is kg per unit.
-//
-// Returns { item } or { error } -- errors are plain-English and say how
-// to fix the order, so they can go straight into the Label Status column.
-const AUSPOST_CONTENT_DESCRIPTION_MAX = 40;
-// Australian export rule: goods over AUD 2,000 per consignment need an
-// Export Declaration Number, which this app doesn't collect.
-const EXPORT_DECLARATION_THRESHOLD_AUD = 2000;
-
-export function buildInternationalItem({ reference, entry, contents }) {
-  const usable = (contents || []).filter((c) => Number(c.quantity) > 0);
-  if (usable.length === 0) {
-    return { error: 'International label needs the products in the box for the customs form, but this order has no packed lines.' };
-  }
-  const missingValue = usable.filter((c) => !(Number(c.unitValue) > 0));
-  if (missingValue.length > 0) {
-    return {
-      error: `Customs form needs a sale price for every product. Missing for: ${missingValue.map((c) => c.sku || c.description).join(', ')}.`,
-    };
-  }
-
-  const itemContents = usable.map((c) => ({
-    description: truncateField(c.description || c.sku || INTL_ITEM_DESCRIPTION, AUSPOST_CONTENT_DESCRIPTION_MAX),
-    ...(c.sku ? { sku: truncateField(c.sku, AUSPOST_CONTENT_DESCRIPTION_MAX) } : {}),
-    quantity: Math.max(1, Math.round(Number(c.quantity))),
-    value: Number(Number(c.unitValue).toFixed(2)),
-    weight: Number(Math.max(0.001, Number(c.unitWeight) || 0.2).toFixed(3)),
-    tariff_code: INTL_ITEM_HS_CODE,
-    country_of_origin: INTL_ITEM_ORIGIN,
-  }));
-
-  const declaredTotal = itemContents.reduce((sum, c) => sum + c.value * c.quantity, 0);
-  if (declaredTotal > EXPORT_DECLARATION_THRESHOLD_AUD) {
-    return {
-      error: `Declared value is $${declaredTotal.toFixed(2)} AUD, over the $2,000 limit. This parcel needs an Export Declaration Number, so book it directly in AusPost.`,
-    };
-  }
-
-  return {
-    item: {
-      item_reference: reference,
-      product_id: entry.service,
-      length: String(entry.length),
-      width: String(entry.width),
-      height: String(entry.height),
-      weight: String(entry.weight),
-      item_description: truncateField(INTL_ITEM_DESCRIPTION, AUSPOST_CONTENT_DESCRIPTION_MAX),
-      classification_type: 'SALE_OF_GOODS',
-      commercial_value: true,
-      item_contents: itemContents,
-    },
-  };
-}
-
-// Checks the destination fields AusPost needs for an international
-// parcel that a domestic one can live without. Returns an error string
-// or null.
-export function checkInternationalTo(to) {
-  if (!/^[A-Z]{2}$/.test(to.country || '')) {
-    return `Country "${to.country || 'blank'}" isn't a 2-letter country code. Fix it with Edit address (for example NZ, US, GB).`;
-  }
-  if (to.country === 'AU') {
-    return 'Country is Australia but the service is International. Change the service to Parcel Post or Express Post, or fix the country with Edit address.';
-  }
-  if (!(to.phone || '').trim()) {
-    return "International labels need the customer's phone number. Add it with Edit address.";
-  }
-  if (!(to.lines || []).some((l) => (l || '').trim())) {
-    return 'Street address is empty. Add it with Edit address.';
-  }
-  return null;
-}
-
-// International parcels also carry the sender's country.
-export const SENDER_ADDRESS_INTL = { ...SENDER_ADDRESS, country: 'AU' };

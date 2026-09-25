@@ -1,10 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useStepParam } from './app/useStepParam';
-import StepBar from './layout/StepBar';
-import AddressEditor from './AddressEditor';
 import { supabase } from './supabaseClient';
 import { PDFDocument } from 'pdf-lib';
-import { INTL_PRODUCT_ID, SENDER_ADDRESS, SENDER_ADDRESS_INTL, buildInternationalItem, checkInternationalTo, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
+import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
 
 const CARRIERS = ['Australia Post', 'StarTrack', 'DHL', 'CouriersPlease', 'Other'];
 
@@ -33,7 +30,7 @@ const getAutoDimensionsFromWeight = (weightKg) => {
 };
 
 export default function ShopifyFulfillment() {
-  const [activeTab, setActiveTab] = useStepParam('select', ['select', 'validate', 'manifest', 'manifests', 'tracking', 'completed']);
+  const [activeTab, setActiveTab] = useState('select');
   const [expandedOrderIds, setExpandedOrderIds] = useState(new Set());
   const [orders, setOrders] = useState([]);
   const [selectedOrderIds, setSelectedOrderIds] = useState([]);
@@ -46,24 +43,22 @@ export default function ShopifyFulfillment() {
 
   const [defaultService, setDefaultService] = useState('3D55');
 
-  // --- Validate & Price (step 2) ---
+  // --- Validate & Price (Tab 2) ---
   const [checkResults, setCheckResults] = useState({});
   const [checkingAll, setCheckingAll] = useState(false);
   const [selectedForLabel, setSelectedForLabel] = useState([]);
   const [creatingLabels, setCreatingLabels] = useState(false);
   const [sendingBack, setSendingBack] = useState(false);
   const autoCheckedRef = useRef(new Set());
-  // Order name whose full address editor is open on the validate step.
-  const [editingAddressFor, setEditingAddressFor] = useState(null);
 
-  // --- Create Label & Book Manifest (step 3) ---
+  // --- Create Label & Book Manifest (Tab 3) ---
   const [processState, setProcessState] = useState({});
   const [manifestBusy, setManifestBusy] = useState(false);
   const [orderReference, setOrderReference] = useState(`Order-${new Date().toISOString().slice(0, 10)}`);
   const [selectedManifestNumbers, setSelectedManifestNumbers] = useState([]);
   const [redownloadingFor, setRedownloadingFor] = useState(null);
 
-  // --- Saved Manifests (step 4) ---
+  // --- Saved Manifests (Tab 4) ---
   const [manifests, setManifests] = useState([]);
   const [manifestsLoading, setManifestsLoading] = useState(false);
   const [manifestsError, setManifestsError] = useState(null);
@@ -295,7 +290,7 @@ export default function ShopifyFulfillment() {
       }
 
       // shipped_date was missing from this insert entirely, despite
-      // fetchCompletedHistory sorting by it and step 4 displaying it --
+      // fetchCompletedHistory sorting by it and Tab 4 displaying it --
       // if that column is NOT NULL with no default, every single insert
       // here would fail on a constraint violation, get caught below,
       // logged only to error_logs, and never surface to the user. This
@@ -461,20 +456,9 @@ export default function ShopifyFulfillment() {
             const rawItem = item.lineItem || {};
             const weightObj = rawItem.variant?.inventoryItem?.measurement?.weight || {};
 
-            // SKU and unit price feed the customs form on international
-            // labels. Read defensively: they're only present if
-            // shopify-proxy's fetch_unfulfilled_orders query asks for
-            // lineItem.sku and lineItem.originalUnitPriceSet.
-            const unitPrice =
-              rawItem.discountedUnitPriceSet?.shopMoney?.amount ??
-              rawItem.originalUnitPriceSet?.shopMoney?.amount ??
-              rawItem.variant?.price ??
-              null;
             parsedItems.push({
               fo_line_item_id: item.id,
               title: rawItem.title || 'Product',
-              sku: rawItem.sku || rawItem.variant?.sku || '',
-              unit_price: unitPrice != null ? Number(unitPrice) : null,
               remaining_qty: remQty,
               unit_weight_kg: normalizeWeight(weightObj.value, weightObj.unit),
             });
@@ -792,7 +776,7 @@ export default function ShopifyFulfillment() {
     };
   };
 
-  // step 2's "Create Label" action: creates the AusPost shipment, then
+  // Tab 2's "Create Label" action: creates the AusPost shipment, then
   // immediately creates its label (A6, unbranded-stationery-safe per
   // AusPost's real branding documentation -- branded:true since this
   // business doesn't use AusPost's pre-printed stock), then forces a
@@ -815,34 +799,6 @@ export default function ShopifyFulfillment() {
         const isInternational = entry.service === INTL_PRODUCT_ID;
         const toAddress = buildSafeToAddress(order, isInternational);
 
-        // Domestic: plain parcel. International: same parcel plus the
-        // customs declaration AusPost requires (see buildInternationalItem).
-        const domesticItem = {
-          item_reference: orderNumber,
-          product_id: entry.service,
-          length: String(entry.length),
-          width: String(entry.width),
-          height: String(entry.height),
-          weight: String(entry.weight),
-        };
-        let shipmentItem = domesticItem;
-        if (isInternational) {
-          const toError = checkInternationalTo(toAddress);
-          if (toError) throw new Error(toError);
-          // Shopify line items as queued for this parcel. Price and SKU
-          // come from the shopify-proxy order fetch (see parsedItems).
-          const contents = (entry.selected_items || order.lineItems || []).map((l) => ({
-            sku: l.sku,
-            description: l.title,
-            quantity: l.dispatch_qty ?? l.remaining_qty,
-            unitValue: l.unit_price,
-            unitWeight: l.unit_weight_kg,
-          }));
-          const intl = buildInternationalItem({ reference: orderNumber, entry, contents });
-          if (intl.error) throw new Error(intl.error);
-          shipmentItem = intl.item;
-        }
-
         const shipData = await callAusPostAction({
           action: 'create_auspost_shipment',
           auspostShipments: [
@@ -852,9 +808,18 @@ export default function ShopifyFulfillment() {
               // "Sender reference 1" in the old CSV template
               // corresponds to in the JSON API.
               customer_reference_1: truncateField(orderNumber, 50),
-              from: isInternational ? SENDER_ADDRESS_INTL : SENDER_ADDRESS,
+              from: SENDER_ADDRESS,
               to: toAddress,
-              items: [shipmentItem],
+              items: [
+                {
+                  item_reference: orderNumber,
+                  product_id: entry.service,
+                  length: String(entry.length),
+                  width: String(entry.width),
+                  height: String(entry.height),
+                  weight: String(entry.weight),
+                },
+              ],
             },
           ],
         });
@@ -908,7 +873,7 @@ export default function ShopifyFulfillment() {
     }
   };
 
-  // step 3's re-download -- for a shipment not yet booked into a
+  // Tab 3's re-download -- for a shipment not yet booked into a
   // manifest, the label URL from creation may have expired, so this
   // re-fetches a fresh one from AusPost directly via the stored
   // request_id (Get Label), rather than assuming the original URL is
@@ -937,14 +902,14 @@ export default function ShopifyFulfillment() {
     if (orderNumbers.length === 0) return;
     const updatedQueue = csvQueue.filter((e) => !orderNumbers.includes(e.order_data.orderName));
     await saveQueueToDb(updatedQueue);
-    setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to step 1.` });
+    setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to Tab 1.` });
   };
 
-  // step 3's "Delete Shipment": deletes the real AusPost shipment
+  // Tab 3's "Delete Shipment": deletes the real AusPost shipment
   // (removes the label with it -- AusPost has no separate "delete
   // label" call), then clears local process state, then removes the
   // order from csvQueue entirely -- which is what makes it reappear
-  // in step 1.
+  // in Tab 1.
   const handleDeleteShipment = async (entries) => {
     const successfullyDeleted = [];
     for (const entry of entries) {
@@ -968,7 +933,7 @@ export default function ShopifyFulfillment() {
     if (successfullyDeleted.length > 0) await handleRemoveMultipleFromQueue(successfullyDeleted);
   };
 
-  // step 3's "Create Manifest": books the manifest (seals every ready
+  // Tab 3's "Create Manifest": books the manifest (seals every ready
   // shipment into one real AusPost order), downloads the real order
   // summary PDF, then updates Shopify for each shipment via
   // mark_fulfilled (matching exactly the same pattern already proven
@@ -1215,7 +1180,7 @@ export default function ShopifyFulfillment() {
   const handleClearBatch = async () => {
     if (csvQueue.length === 0) return;
     await saveQueueToDb([]);
-    setMsg({ type: 'success', text: 'Batch cleared. All orders returned to full view in step 1.' });
+    setMsg({ type: 'success', text: 'Batch cleared. All orders returned to full view in Tab 1.' });
   };
 
   const handleFulfillSingleOrderDirect = async (order) => {
@@ -1304,24 +1269,6 @@ export default function ShopifyFulfillment() {
     saveQueueToDb(updatedQueue);
   };
 
-  // Saves an edited order (label only, Shopify itself is untouched) and
-  // re-checks it straight away, since the auto-check only fires when the
-  // batch size changes.
-  const applyOrderEdit = (idx, entry, updatedOrder) => {
-    handleUpdateQueueItem(idx, { order_data: updatedOrder });
-    autoCheckedRef.current.add(updatedOrder.orderName);
-    handleCheckEntry({ ...entry, order_data: updatedOrder });
-  };
-
-  // Opening a step straight from its URL (refresh, bookmark) should load
-  // that step's data, same as clicking it in the step bar.
-  useEffect(() => {
-    if (activeTab === 'manifests') loadManifests();
-    if (activeTab === 'tracking') loadTrackingRows();
-    if (activeTab === 'completed') fetchCompletedHistory();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   return (
     <div className="space-y-4">
       {/* Top Settings Bar */}
@@ -1349,26 +1296,57 @@ export default function ShopifyFulfillment() {
         </div>
       </div>
 
-      {/* Workflow steps (step lives in the URL: ?step=validate) */}
-      <StepBar
-        active={activeTab}
-        onChange={(id) => {
-          setActiveTab(id);
-          if (id === 'manifests') loadManifests();
-          if (id === 'tracking') loadTrackingRows();
-          if (id === 'completed') fetchCompletedHistory();
-        }}
-        steps={[
-          { id: 'select', label: 'Select orders', count: orders.length },
-          { id: 'validate', label: 'Validate & price', count: csvQueue.length },
-          { id: 'manifest', label: 'Label & manifest' },
-          { id: 'manifests', label: 'Saved manifests' },
-          { id: 'tracking', label: 'Tracking' },
-        ]}
-        aside={[
-          { id: 'completed', label: 'Completed', count: completedOrders.length },
-        ]}
-      />
+      {/* Navigation Sub-Tabs */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs flex gap-1 flex-wrap">
+        <button
+          onClick={() => setActiveTab('select')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'select' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          1️⃣ Select Orders ({orders.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('validate')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'validate' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          2️⃣ Validate & Price ({csvQueue.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('manifest')}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'manifest' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          3️⃣ Create Label & Book Manifest
+        </button>
+        <button
+          onClick={() => { setActiveTab('manifests'); loadManifests(); }}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'manifests' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          4️⃣ Saved Manifests
+        </button>
+        <button
+          onClick={() => { setActiveTab('tracking'); loadTrackingRows(); }}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'tracking' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          5️⃣ Tracking
+        </button>
+        <button
+          onClick={() => { setActiveTab('completed'); fetchCompletedHistory(); }}
+          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer ${
+            activeTab === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          6️⃣ Completed Orders ({completedOrders.length})
+        </button>
+      </div>
 
       {msg && (
         <div className={`p-3 text-xs rounded-lg border ${
@@ -1448,7 +1426,7 @@ export default function ShopifyFulfillment() {
                       </div>
                     </div>
                     <span className="text-slate-400 italic text-[11px]">
-                      Queued in step 2
+                      Queued in Tab 2
                     </span>
                   </div>
                 );
@@ -1568,7 +1546,7 @@ export default function ShopifyFulfillment() {
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
           {csvQueue.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400">
-              No orders queued. Select orders from step 1 and click "Add Selected to Batch".
+              No orders queued. Select orders from Tab 1 and click "Add Selected to Batch".
             </div>
           ) : (
             <>
@@ -1600,7 +1578,7 @@ export default function ShopifyFulfillment() {
                     onClick={async () => {
                       const eligible = selectedForLabel.filter((n) => !processState[n]?.shipmentId);
                       if (eligible.length === 0) return;
-                      if (!window.confirm(`Send ${eligible.length} order(s) back to step 1?`)) return;
+                      if (!window.confirm(`Send ${eligible.length} order(s) back to Tab 1?`)) return;
                       setSendingBack(true);
                       await handleRemoveMultipleFromQueue(eligible);
                       setSelectedForLabel((prev) => prev.filter((n) => !eligible.includes(n)));
@@ -1609,7 +1587,7 @@ export default function ShopifyFulfillment() {
                     disabled={sendingBack || selectedForLabel.length === 0}
                     className="bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs py-2 px-4 rounded-lg cursor-pointer disabled:opacity-50 border border-slate-300"
                   >
-                    {sendingBack ? 'Sending...' : `↩️ Send Back to step 1 (${selectedForLabel.length})`}
+                    {sendingBack ? 'Sending...' : `↩️ Send Back to Tab 1 (${selectedForLabel.length})`}
                   </button>
                   <button
                     onClick={async () => {
@@ -1653,8 +1631,7 @@ export default function ShopifyFulfillment() {
                       const alreadyCreated = !!processState[orderNumber]?.shipmentId;
 
                       return (
-                        <React.Fragment key={idx}>
-                        <tr className={editingAddressFor === orderNumber ? 'bg-blue-50/60' : 'hover:bg-slate-50/80'}>
+                        <tr key={idx} className="hover:bg-slate-50/80">
                           <td className="p-3">
                             <input
                               type="checkbox"
@@ -1665,19 +1642,8 @@ export default function ShopifyFulfillment() {
                           </td>
                           <td className="p-3 font-bold text-slate-900">{orderNumber}</td>
                           <td className="p-3 text-slate-700">{order.customer || '—'}</td>
-                          <td className="p-3 text-slate-600 min-w-[14rem]">
-                            <div>{[addr.address1, addr.address2].filter(Boolean).join(', ') || 'No street address'}</div>
-                            <div>{[addr.city, addr.provinceCode, addr.zip].filter(Boolean).join(' ')}{isInternational && addr.countryCodeV2 ? `, ${addr.countryCodeV2}` : ''}</div>
-                            {!alreadyCreated && (
-                              <button
-                                type="button"
-                                onClick={() => setEditingAddressFor(editingAddressFor === orderNumber ? null : orderNumber)}
-                                aria-expanded={editingAddressFor === orderNumber}
-                                className="mt-1 text-[0.78rem] font-semibold text-blue-700 hover:underline cursor-pointer"
-                              >
-                                {editingAddressFor === orderNumber ? 'Close editor' : 'Edit address'}
-                              </button>
-                            )}
+                          <td className="p-3 text-slate-600">
+                            {addr.address1 || ''}, {addr.city || ''} {addr.provinceCode || ''} {addr.zip || ''}
                           </td>
                           <td className="p-3">
                             <select
@@ -1747,10 +1713,13 @@ export default function ShopifyFulfillment() {
                                     onChange={(e) => {
                                       const correctedSuburb = e.target.value;
                                       if (!correctedSuburb) return;
-                                      applyOrderEdit(idx, entry, {
-                                        ...order,
-                                        rawAddress: { ...(order.rawAddress || {}), city: correctedSuburb },
+                                      handleUpdateQueueItem(idx, {
+                                        order_data: {
+                                          ...order,
+                                          rawAddress: { ...(order.rawAddress || {}), city: correctedSuburb },
+                                        },
                                       });
+                                      autoCheckedRef.current.delete(orderNumber);
                                     }}
                                     className="mt-1 text-[10px] bg-white border border-slate-300 rounded px-1.5 py-1 w-full"
                                   >
@@ -1761,15 +1730,6 @@ export default function ShopifyFulfillment() {
                                   </select>
                                 ) : (
                                   <div className="text-[10px] text-slate-500 mt-0.5">No suggestions available -- check the postcode.</div>
-                                )}
-                                {!alreadyCreated && editingAddressFor !== orderNumber && (
-                                  <button
-                                    type="button"
-                                    onClick={() => setEditingAddressFor(orderNumber)}
-                                    className="mt-1 block text-[0.78rem] font-semibold text-blue-700 hover:underline cursor-pointer"
-                                  >
-                                    Whole address wrong? Edit it
-                                  </button>
                                 )}
                               </div>
                             )}
@@ -1791,24 +1751,6 @@ export default function ShopifyFulfillment() {
                             })()}
                           </td>
                         </tr>
-                        {editingAddressFor === orderNumber && (
-                          <tr className="bg-blue-50/60">
-                            <td colSpan={10} className="px-3 pb-4 pt-1">
-                              <AddressEditor
-                                format="shopify"
-                                order={order}
-                                isInternational={isInternational}
-                                suburbSuggestions={check?.addressSuggestions || []}
-                                onCancel={() => setEditingAddressFor(null)}
-                                onSave={(updatedOrder) => {
-                                  applyOrderEdit(idx, entry, updatedOrder);
-                                  setEditingAddressFor(null);
-                                }}
-                              />
-                            </td>
-                          </tr>
-                        )}
-                        </React.Fragment>
                       );
                     })}
                   </tbody>
@@ -1827,7 +1769,7 @@ export default function ShopifyFulfillment() {
         if (readyQueue.length === 0) {
           return (
             <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-xs text-slate-400 shadow-xs">
-              No labelled shipments yet. Create labels for orders in step 2 first.
+              No labelled shipments yet. Create labels for orders in Tab 2 first.
             </div>
           );
         }
@@ -1862,7 +1804,7 @@ export default function ShopifyFulfillment() {
                   onClick={async () => {
                     const entries = readyQueue.filter((entry) => selectedManifestNumbers.includes(orderNumberOf(entry)));
                     if (entries.length === 0) return;
-                    if (!window.confirm(`Delete ${entries.length} shipment(s) and their labels? This returns the order(s) to step 1.`)) return;
+                    if (!window.confirm(`Delete ${entries.length} shipment(s) and their labels? This returns the order(s) to Tab 1.`)) return;
                     setManifestBusy(true);
                     await handleDeleteShipment(entries);
                     setSelectedManifestNumbers([]);
@@ -1967,7 +1909,7 @@ export default function ShopifyFulfillment() {
 
           {!manifestsError && !manifestsLoading && manifests.length === 0 && (
             <div className="p-8 text-center text-xs text-slate-400">
-              No manifests booked yet. They'll appear here automatically once you book one in step 3.
+              No manifests booked yet. They'll appear here automatically once you book one in Tab 3.
             </div>
           )}
 
@@ -2078,7 +2020,7 @@ export default function ShopifyFulfillment() {
 
           {!trackingError && !trackingLoading && trackingRows.length === 0 && (
             <div className="p-8 text-center text-xs text-slate-400">
-              No tracked shipments yet. They'll appear here automatically once a manifest is booked in step 3.
+              No tracked shipments yet. They'll appear here automatically once a manifest is booked in Tab 3.
             </div>
           )}
 
