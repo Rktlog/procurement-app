@@ -61,14 +61,23 @@ const addressLines = (a) => {
 
 function getTotals(draft) {
   const linesSum = draft.lines.reduce((sum, l) => sum + (Number(l.line_total) || 0), 0);
-  const apiSubtotal = Number(draft.subtotal) || 0;
+  const orderDiscount = Number(draft.order_discount) || 0;
+  const discountLabel = draft.discount_label || '';
+  const shipping = Number(draft.shipping) || 0;
 
-  if (apiSubtotal > 0 && Math.abs(apiSubtotal - linesSum) < 0.5) {
+  // Shopify's own figures are what the customer was actually charged, so
+  // they always win when present. The old check fell back to recalculating
+  // whenever Shopify's subtotal and the line totals differed by more than
+  // 50c -- which is exactly what an order-level discount code causes, so
+  // discounted orders were invoiced as if there was no discount.
+  if (Number(draft.total) > 0) {
     return {
-      subtotal: apiSubtotal,
-      shipping: Number(draft.shipping) || 0,
+      subtotal: linesSum,
+      orderDiscount,
+      discountLabel,
+      shipping,
       tax: Number(draft.tax) || 0,
-      total: Number(draft.total) || 0,
+      total: Number(draft.total),
       // GST is a fixed 10% -- deriving it from tax/subtotal produced
       // rounding artifacts (e.g. "9%") on orders with many differently
       // rounded line items, even though the real rate never changed.
@@ -76,12 +85,11 @@ function getTotals(draft) {
     };
   }
 
-  const shipping = Number(draft.shipping) || 0;
-  const subtotal = linesSum;
-  const tax = draft.taxes_included ? subtotal - subtotal / 1.1 : subtotal * 0.1;
-  const total = draft.taxes_included ? subtotal + shipping : subtotal + shipping + tax;
-
-  return { subtotal, shipping, tax, total, taxRateLabel: '10%' };
+  // Only reached if Shopify sent no total at all.
+  const net = linesSum - orderDiscount;
+  const tax = draft.taxes_included ? net - net / 1.1 : net * 0.1;
+  const total = draft.taxes_included ? net + shipping : net + shipping + tax;
+  return { subtotal: linesSum, orderDiscount, discountLabel, shipping, tax, total, taxRateLabel: '10%' };
 }
 
 // Local bundled asset (the logo) -- same origin, no CORS involved, so a
@@ -179,6 +187,7 @@ const s = StyleSheet.create({
   cProduct: { width: '46%', paddingRight: 6 },
   productTitle: { color: '#111827', fontFamily: 'Helvetica-Bold', lineHeight: 1 },
   productVariant: { color: '#9ca3af', fontSize: 7.5, marginTop: 1 },
+  productDiscount: { color: '#b91c1c', fontSize: 7.5, marginTop: 1 },
   cPrice: { width: '15%' },
   cQty: { width: '10%' },
   cTotal: { width: '20%', textAlign: 'right' },
@@ -274,6 +283,11 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, lineImag
             <View style={s.cProduct}>
               <Text style={s.productTitle}>{l.title}</Text>
               {l.variant_title ? <Text style={s.productVariant}>{l.variant_title}</Text> : null}
+              {l.discount_amount > 0 ? (
+                <Text style={s.productDiscount}>
+                  {l.discount_title || 'Discount'}: -{fmtMoney(l.discount_amount, cur)}
+                </Text>
+              ) : null}
             </View>
             <Text style={s.cPrice}>{fmtMoney(l.unit_price, cur)}</Text>
             <Text style={s.cQty}>{l.qty}</Text>
@@ -304,6 +318,14 @@ function InvoicePDF({ draft, docType, docNumber, issuedAt, logoDataUri, lineImag
               <Text style={s.summaryLabel}>Subtotal</Text>
               <Text>{fmtMoney(totals.subtotal, cur)}</Text>
             </View>
+            {totals.orderDiscount > 0 ? (
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>
+                  Discount{totals.discountLabel ? ` (${totals.discountLabel})` : ''}
+                </Text>
+                <Text>-{fmtMoney(totals.orderDiscount, cur)}</Text>
+              </View>
+            ) : null}
             <View style={s.summaryRow}>
               <Text style={s.summaryLabel}>Shipping</Text>
               <Text>{fmtMoney(totals.shipping, cur)}</Text>
@@ -800,6 +822,11 @@ export default function CreateInvoice() {
                             {l.variant_title && (
                               <div className="text-slate-400 text-[10px]">{l.variant_title}</div>
                             )}
+                            {l.discount_amount > 0 && (
+                              <div className="text-red-700 text-[10px]">
+                                {l.discount_title || 'Discount'}: -{fmtMoney(l.discount_amount, detail.currency)}
+                              </div>
+                            )}
                           </td>
                           <td className="py-1 px-2">{fmtMoney(l.unit_price, detail.currency)}</td>
                           <td className="py-1 px-2">{l.qty}</td>
@@ -830,6 +857,14 @@ export default function CreateInvoice() {
                         <span className="text-slate-500">Subtotal</span>
                         <span>{fmtMoney(previewTotals.subtotal, detail.currency)}</span>
                       </div>
+                      {previewTotals.orderDiscount > 0 && (
+                        <div className="flex justify-between py-1 border-b border-slate-100">
+                          <span className="text-slate-500">
+                            Discount{previewTotals.discountLabel ? ` (${previewTotals.discountLabel})` : ''}
+                          </span>
+                          <span>-{fmtMoney(previewTotals.orderDiscount, detail.currency)}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between py-1 border-b border-slate-100">
                         <span className="text-slate-500">Shipping</span>
                         <span>{fmtMoney(previewTotals.shipping, detail.currency)}</span>
