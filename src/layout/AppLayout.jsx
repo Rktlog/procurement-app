@@ -4,7 +4,7 @@ import { ChevronDown, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../app/AuthContext';
 import PageErrorBoundary from './PageErrorBoundary';
 import { useStagedPO } from '../app/StagedPOContext';
-import { findPage, visibleModules } from '../app/navigation';
+import { findPage } from '../app/navigation';
 
 export default function AppLayout() {
   const location = useLocation();
@@ -29,9 +29,8 @@ export default function AppLayout() {
 }
 
 function TopBar({ activeModuleId }) {
-  const { user, isMasterAdmin, userApps, signOut } = useAuth();
+  const { user, signOut, modules, business, businesses, canSwitchBusiness, switchBusiness } = useAuth();
   const { items: stagedItems } = useStagedPO();
-  const modules = visibleModules({ isMasterAdmin, userApps });
   const location = useLocation();
 
   const [openMenu, setOpenMenu] = useState(null); // module appId, 'user', or null
@@ -72,6 +71,28 @@ function TopBar({ activeModuleId }) {
             Rocket Operation
           </span>
         </Link>
+
+        {/* Company: a switcher for admins, a plain label for everyone else */}
+        <div className="hidden lg:flex items-center shrink-0">
+          {canSwitchBusiness ? (
+            <select
+              value={business?.id || ''}
+              onChange={(e) => switchBusiness(e.target.value)}
+              aria-label="Company"
+              className="h-8 rounded-md bg-rail-hover text-white text-[0.85rem] font-semibold pl-2.5 pr-7 border border-white/15 cursor-pointer focus:outline-none focus:ring-2 focus:ring-hivis"
+            >
+              {businesses.map((b) => (
+                <option key={b.id} value={b.id} className="text-ink">
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="text-[0.85rem] font-semibold text-white/90 px-2.5 py-1 rounded-md bg-rail-hover">
+              {business?.name}
+            </span>
+          )}
+        </div>
 
         {/* Desktop menu */}
         <nav className="hidden lg:flex items-stretch gap-1" aria-label="Main">
@@ -181,6 +202,20 @@ function TopBar({ activeModuleId }) {
       {mobileOpen && (
         <div className="lg:hidden absolute inset-x-0 top-full max-h-[calc(100vh-3.5rem)] overflow-y-auto bg-white text-ink border-b border-rule shadow-lg">
           <nav className="px-4 py-3" aria-label="Main">
+            {canSwitchBusiness ? (
+              <select
+                value={business?.id || ''}
+                onChange={(e) => switchBusiness(e.target.value)}
+                aria-label="Company"
+                className="w-full h-10 mb-2 rounded-md border border-rule bg-white text-[0.95rem] font-semibold px-2"
+              >
+                {businesses.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            ) : (
+              <div className="text-[0.9rem] font-bold text-slate-700 mb-1">{business?.name}</div>
+            )}
             <NavLink to="/" end className="block py-2 text-[0.95rem] font-semibold">
               Home
             </NavLink>

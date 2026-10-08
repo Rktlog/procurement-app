@@ -15,6 +15,9 @@ export default function UserManagementAdmin() {
   const [newPassword, setNewPassword] = useState('');
   const [newApps, setNewApps] = useState(['procurement']);
   const [newIsMaster, setNewIsMaster] = useState(false);
+  // Every non-admin belongs to exactly one company.
+  const [companies, setCompanies] = useState([]);
+  const [newCompany, setNewCompany] = useState('');
   const [formLoading, setFormLoading] = useState(false);
   const [msg, setMsg] = useState(null);
 
@@ -40,6 +43,8 @@ export default function UserManagementAdmin() {
     setLoading(true);
     const { data, error } = await supabase.from('user_roles').select('*').order('email');
     if (!error) setUsers(data || []);
+    const { data: biz } = await supabase.from('businesses').select('id, name').order('name');
+    setCompanies(biz || []);
     setLoading(false);
   };
 
@@ -56,6 +61,10 @@ export default function UserManagementAdmin() {
       return setMsg({ type: 'error', text: 'Select at least one assigned application.' });
     }
 
+    if (!newIsMaster && !newCompany) {
+      return setMsg({ type: 'error', text: 'Choose which company this user belongs to.' });
+    }
+
     setFormLoading(true);
     try {
       const { data, error } = await supabase.rpc('create_new_user_by_admin', {
@@ -63,6 +72,7 @@ export default function UserManagementAdmin() {
         new_password: newPassword.trim(),
         is_master_flag: newIsMaster,
         assigned_apps_list: newApps,
+        company: newIsMaster ? null : newCompany,
       });
 
       if (error) throw error;
@@ -72,6 +82,7 @@ export default function UserManagementAdmin() {
       setNewPassword('');
       setNewApps(['procurement']);
       setNewIsMaster(false);
+      setNewCompany('');
       setIsDropdownOpen(false);
       await fetchUsers();
     } catch (err) {
@@ -98,6 +109,14 @@ export default function UserManagementAdmin() {
       .update({ assigned_apps: updatedApps, updated_at: new Date().toISOString() })
       .eq('user_id', userId);
 
+    if (!error) await fetchUsers();
+  };
+
+  const handleSetCompany = async (userId, businessId) => {
+    const { error } = await supabase
+      .from('user_roles')
+      .update({ assigned_businesses: [businessId], updated_at: new Date().toISOString() })
+      .eq('user_id', userId);
     if (!error) await fetchUsers();
   };
 
@@ -173,6 +192,21 @@ export default function UserManagementAdmin() {
             />
           </div>
 
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Company</label>
+            <select
+              value={newIsMaster ? '' : newCompany}
+              onChange={(e) => setNewCompany(e.target.value)}
+              disabled={newIsMaster}
+              className="w-full text-xs bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 h-9 disabled:opacity-50"
+            >
+              <option value="">{newIsMaster ? 'All companies' : 'Select company'}</option>
+              {companies.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Multi-Select Dropdown */}
           <div className="relative" ref={dropdownRef}>
             <label className="block text-xs font-bold text-slate-700 mb-1">Assigned Apps</label>
@@ -240,6 +274,7 @@ export default function UserManagementAdmin() {
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px] tracking-wider">
                   <th className="p-3">User Email</th>
+                  <th className="p-3">Company</th>
                   <th className="p-3 text-center">Master Admin</th>
                   <th className="p-3">App Access</th>
                   <th className="p-3 text-right">Actions</th>
@@ -249,6 +284,24 @@ export default function UserManagementAdmin() {
                 {users.map((u) => (
                   <tr key={u.user_id} className="hover:bg-slate-50">
                     <td className="p-3 font-bold text-slate-800">{u.email}</td>
+                    <td className="p-3">
+                      {u.is_master ? (
+                        <span className="text-slate-500">All companies</span>
+                      ) : (
+                        <select
+                          value={(u.assigned_businesses || []).length === 1 ? u.assigned_businesses[0] : ''}
+                          onChange={(e) => handleSetCompany(u.user_id, e.target.value)}
+                          className={`text-xs bg-slate-50 border rounded-md px-2 py-1 ${
+                            (u.assigned_businesses || []).length === 1 ? 'border-slate-300' : 'border-red-400'
+                          }`}
+                        >
+                          <option value="" disabled>Choose company</option>
+                          {companies.map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      )}
+                    </td>
                     <td className="p-3 text-center">
                       <input
                         type="checkbox"

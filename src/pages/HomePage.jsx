@@ -2,12 +2,10 @@ import { Link, Navigate } from 'react-router-dom';
 import { ChevronRight } from 'lucide-react';
 import { useAuth } from '../app/AuthContext';
 import { useStagedPO } from '../app/StagedPOContext';
-import { visibleModules } from '../app/navigation';
 
 export default function HomePage() {
-  const { isMasterAdmin, userApps } = useAuth();
+  const { isMasterAdmin, modules, business } = useAuth();
   const { items: stagedItems } = useStagedPO();
-  const modules = visibleModules({ isMasterAdmin, userApps });
 
   // Someone with access to a single module goes straight to it.
   if (!isMasterAdmin && modules.length === 1) {
@@ -18,7 +16,7 @@ export default function HomePage() {
     <div>
       <header className="border-b border-rule pb-5 mb-8">
         <h1 className="page-title text-[2.4rem] sm:text-[3rem] text-ink">{greeting()}</h1>
-        <p className="mt-2 text-[0.95rem] text-slate-600">Pick up where the warehouse needs you.</p>
+        <p className="mt-2 text-[0.95rem] text-slate-600">{business?.name}</p>
       </header>
 
       {stagedItems.length > 0 && (

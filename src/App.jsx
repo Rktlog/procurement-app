@@ -1,8 +1,9 @@
 import { lazy } from 'react';
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './app/AuthContext';
 import { StagedPOProvider } from './app/StagedPOContext';
 import AppLayout from './layout/AppLayout';
+import { findPage, pageAllowed } from './app/navigation';
 
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
@@ -24,28 +25,29 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <StagedPOProvider>
-          <AuthGate />
-        </StagedPOProvider>
+        <AuthGate />
       </AuthProvider>
     </BrowserRouter>
   );
 }
 
 function AuthGate() {
-  const { session, loading, permissionsError } = useAuth();
+  const { session, loading, permissionsError, business } = useAuth();
 
   if (loading) return <LoadingScreen />;
   if (!session) return <LoginPage />;
   if (permissionsError) return <PermissionsErrorScreen />;
 
+  // Keyed by company: switching company remounts every page and the staged
+  // PO list, so nothing from one company is ever shown under another.
   return (
+    <StagedPOProvider key={business?.id}>
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<HomePage />} />
 
         <Route path="procurement" element={<RequireApp appId="procurement" />}>
-          <Route index element={<Navigate to="search" replace />} />
+          <Route index element={<ModuleIndex appId="procurement" />} />
           <Route path="reorder" element={<ReorderPage />} />
           <Route path="urgent" element={<UrgentOrdersPage />} />
           <Route path="longterm" element={<LongtermOrdersPage />} />
@@ -54,13 +56,13 @@ function AuthGate() {
         </Route>
 
         <Route path="shipping" element={<RequireApp appId="shipping" />}>
-          <Route index element={<Navigate to="pantone" replace />} />
+          <Route index element={<ModuleIndex appId="shipping" />} />
           <Route path="pantone" element={<PantoneFulfillmentPage />} />
           <Route path="shopify" element={<ShopifyFulfillmentPage />} />
         </Route>
 
         <Route path="sales" element={<RequireApp appId="sales" />}>
-          <Route index element={<Navigate to="invoice" replace />} />
+          <Route index element={<ModuleIndex appId="sales" />} />
           <Route path="invoice" element={<CreateInvoicePage />} />
         </Route>
 
@@ -72,6 +74,7 @@ function AuthGate() {
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
+    </StagedPOProvider>
   );
 }
 
@@ -79,6 +82,19 @@ function AuthGate() {
 // assigned (or is a master admin). The server still enforces access through
 // RLS; this just keeps people out of screens that would fail for them.
 function RequireApp({ appId }) {
-  const { canOpen } = useAuth();
-  return canOpen(appId) ? <Outlet /> : <NoAccessPage />;
+  const { canOpen, business } = useAuth();
+  const { pathname } = useLocation();
+  const match = findPage(pathname);
+  if (!canOpen(appId)) return <NoAccessPage />;
+  // The module can be open while a single page isn't (e.g. Pantone orders
+  // for a company that only ships from Shopify).
+  if (match && appId !== 'admin' && !pageAllowed(match.page, business)) return <NoAccessPage />;
+  return <Outlet />;
+}
+
+// /shipping on its own opens the first page this company actually has.
+function ModuleIndex({ appId }) {
+  const { modules } = useAuth();
+  const first = modules.find((m) => m.appId === appId)?.pages[0]?.path;
+  return <Navigate to={first || '/'} replace />;
 }

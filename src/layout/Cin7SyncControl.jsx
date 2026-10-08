@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { supabase } from '../supabaseClient';
+import { useAuth } from '../app/AuthContext';
 
 // Cin7 inventory sync. Shown on every Procurement page because Urgent,
 // Long-term and Product search all read the tables this sync writes to.
 export default function Cin7SyncControl() {
+  const { business } = useAuth();
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -41,6 +43,9 @@ export default function Cin7SyncControl() {
     }
     setSyncing(false);
   };
+
+  // The Cin7 sync only applies to companies that run on Cin7.
+  if (business?.platform !== 'cin7') return null;
 
   return (
     <div className="flex flex-col items-start md:items-end gap-1.5">
