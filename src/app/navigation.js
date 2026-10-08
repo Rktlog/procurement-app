@@ -45,8 +45,8 @@ export const MODULES = [
       },
       {
         path: '/procurement/settings',
-        label: 'Settings',
-        description: 'Supplier lead times and your password.',
+        label: 'Supplier lead time',
+        description: 'Set how long each supplier takes to deliver, so reorders land before stock runs out.',
         icon: SlidersHorizontal,
       },
     ],

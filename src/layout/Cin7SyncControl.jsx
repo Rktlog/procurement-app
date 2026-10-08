@@ -2,10 +2,17 @@ import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../app/AuthContext';
+import StoreSyncControl from './StoreSyncControl';
 
 // Cin7 inventory sync. Shown on every Procurement page because Urgent,
 // Long-term and Product search all read the tables this sync writes to.
+// Companies on Cin7 sync from DEAR; companies on Shopify sync from their store.
 export default function Cin7SyncControl() {
+  const { business } = useAuth();
+  return business?.platform === 'shopify' ? <StoreSyncControl /> : <Cin7Sync />;
+}
+
+function Cin7Sync() {
   const { business } = useAuth();
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [syncing, setSyncing] = useState(false);

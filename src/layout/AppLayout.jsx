@@ -1,8 +1,9 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { ChevronDown, LogOut, Menu, X } from 'lucide-react';
+import { ChevronDown, KeyRound, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../app/AuthContext';
 import PageErrorBoundary from './PageErrorBoundary';
+import ChangePasswordDialog from './ChangePasswordDialog';
 import { useStagedPO } from '../app/StagedPOContext';
 import { findPage } from '../app/navigation';
 
@@ -35,6 +36,7 @@ function TopBar({ activeModuleId }) {
 
   const [openMenu, setOpenMenu] = useState(null); // module appId, 'user', or null
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const barRef = useRef(null);
 
   // Close everything on page change.
@@ -64,6 +66,7 @@ function TopBar({ activeModuleId }) {
   const stagedCount = stagedItems.length;
 
   return (
+    <>
     <header ref={barRef} className="sticky top-0 z-40 bg-rail text-white">
       <div className="mx-auto max-w-[1400px] px-4 sm:px-6 lg:px-10 h-14 flex items-stretch gap-6">
         <Link to="/" className="flex items-center shrink-0">
@@ -174,6 +177,17 @@ function TopBar({ activeModuleId }) {
             <div className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-rule bg-white text-ink shadow-lg py-1.5">
               <button
                 type="button"
+                onClick={() => {
+                  setOpenMenu(null);
+                  setPasswordOpen(true);
+                }}
+                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm font-semibold hover:bg-slate-50 cursor-pointer"
+              >
+                <KeyRound size={16} className="text-slate-500" />
+                Change password
+              </button>
+              <button
+                type="button"
                 onClick={signOut}
                 className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm font-semibold hover:bg-slate-50 cursor-pointer"
               >
@@ -240,8 +254,19 @@ function TopBar({ activeModuleId }) {
               <div className="text-[0.8rem] text-slate-500 truncate">{user?.email}</div>
               <button
                 type="button"
+                onClick={() => {
+                  setMobileOpen(false);
+                  setPasswordOpen(true);
+                }}
+                className="mt-1.5 flex items-center gap-2 text-sm font-semibold cursor-pointer"
+              >
+                <KeyRound size={15} />
+                Change password
+              </button>
+              <button
+                type="button"
                 onClick={signOut}
-                className="mt-1.5 inline-flex items-center gap-2 text-sm font-semibold cursor-pointer"
+                className="mt-2.5 inline-flex items-center gap-2 text-sm font-semibold cursor-pointer"
               >
                 <LogOut size={15} />
                 Sign out
@@ -251,6 +276,8 @@ function TopBar({ activeModuleId }) {
         </div>
       )}
     </header>
+    <ChangePasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
+    </>
   );
 }
 
