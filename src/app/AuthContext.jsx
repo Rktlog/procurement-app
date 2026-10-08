@@ -31,7 +31,7 @@ export function AuthProvider({ children }) {
         const saved = master ? localStorage.getItem('activeBusiness') : null;
         const pick = list.find((b) => b.id === saved) || list[0];
         // Set before any page renders, so the first queries are already scoped.
-        setActiveBusiness(pick.id);
+        setActiveBusiness(pick.id, pick.shopify_function);
         setBusinesses(list);
         setActiveBusinessId(pick.id);
         setIsMasterAdmin(master);
@@ -93,8 +93,9 @@ export function AuthProvider({ children }) {
 
   const switchBusiness = useCallback(
     (id) => {
-      if (!isMasterAdmin || !businesses.some((b) => b.id === id)) return;
-      setActiveBusiness(id); // before the state change, so the remounted pages query the new company
+      const target = businesses.find((b) => b.id === id);
+      if (!isMasterAdmin || !target) return;
+      setActiveBusiness(id, target.shopify_function); // before the state change, so the remounted pages query the new company
       localStorage.setItem('activeBusiness', id);
       setActiveBusinessId(id);
     },

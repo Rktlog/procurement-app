@@ -7,8 +7,15 @@ const SUPABASE_ANON_KEY = "sb_publishable_W9DS5gykBUmvb4LET5TS6g_T1Bm-A8Q"; // w
 // row-level security only returns rows for that company, and only if the
 // logged-in user is allowed it. AuthContext sets this before any page loads.
 let activeBusinessId = null;
-export const setActiveBusiness = (id) => {
+// Which edge function talks to this company's Shopify store. Most companies
+// share 'shopify-proxy'; Metro Baby has its own ('metrobaby-proxy'). It's set
+// from the database (businesses.shopify_function), not hard-coded here.
+let shopifyFunctionName = 'shopify-proxy';
+export const shopifyProxy = () => shopifyFunctionName;
+
+export const setActiveBusiness = (id, shopifyFunction) => {
   activeBusinessId = id || null;
+  shopifyFunctionName = shopifyFunction || 'shopify-proxy';
 };
 
 const fetchWithBusiness = (input, init = {}) => {

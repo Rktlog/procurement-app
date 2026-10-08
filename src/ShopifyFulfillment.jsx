@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useStepParam } from './app/useStepParam';
 import StepBar from './layout/StepBar';
 import AddressEditor from './AddressEditor';
-import { supabase } from './supabaseClient';
+import { supabase, shopifyProxy } from './supabaseClient';
 import { PDFDocument } from 'pdf-lib';
 import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
 
@@ -429,14 +429,17 @@ export default function ShopifyFulfillment() {
     setMsg(null);
     setSelectedOrderIds([]);
     try {
-      const { data, error } = await supabase.functions.invoke('shopify-proxy', {
+      const { data, error } = await supabase.functions.invoke(shopifyProxy(), {
         body: { action: 'fetch_unfulfilled_orders' },
       });
 
       if (error) throw error;
+      // An error reply must not look like "no orders".
+      if (data?.success === false) throw new Error(data.error || 'Shopify returned an error.');
 
       const edges = data.data?.orders?.edges || [];
       const parsedOrders = [];
+      let skippedNoFulfillmentOrder = 0;
 
       for (const edge of edges) {
         const node = edge.node;
@@ -444,7 +447,10 @@ export default function ShopifyFulfillment() {
         const foEdges = node.fulfillmentOrders?.edges || [];
 
         const activeFoNode = foEdges.find((f) => ['OPEN', 'IN_PROGRESS'].includes(f.node.status))?.node;
-        if (!activeFoNode) continue;
+        if (!activeFoNode) {
+          skippedNoFulfillmentOrder++;
+          continue;
+        }
 
         const shippingTitle = (node.shippingLine?.title || '').toLowerCase();
         const autoDetectedService = shippingTitle.includes('express') ? '3J55' : '3D55';
@@ -513,7 +519,14 @@ export default function ShopifyFulfillment() {
 
       setOrders(parsedOrders);
       await saveOrdersToCache(parsedOrders);
-      setMsg({ type: 'success', text: `Fetched ${parsedOrders.length} unfulfilled orders from Shopify.` });
+      setMsg({
+        type: 'success',
+        text:
+          `Fetched ${parsedOrders.length} unfulfilled orders from Shopify.` +
+          (skippedNoFulfillmentOrder > 0
+            ? ` ${skippedNoFulfillmentOrder} more came back but were skipped: Shopify gave this app no open fulfillment order for them. Open "Details" at the top right to see why.`
+            : ''),
+      });
     } catch (err) {
       await logError('fetchShopifyOrders', err.message);
       setMsg({ type: 'error', text: err.message });
@@ -1020,7 +1033,7 @@ export default function ShopifyFulfillment() {
         const s = getProcessState(orderNumber);
         try {
           const trackUrl = `https://auspost.com.au/mypost/track/#/details/${s.trackingNumber}`;
-          const { data, error } = await supabase.functions.invoke('shopify-proxy', {
+          const { data, error } = await supabase.functions.invoke(shopifyProxy(), {
             body: {
               action: 'mark_fulfilled',
               fulfillmentOrderId: order.fulfillmentOrderId,
@@ -1221,7 +1234,7 @@ export default function ShopifyFulfillment() {
     }).filter((i) => i.dispatch_qty > 0);
 
     try {
-      const { data, error } = await supabase.functions.invoke('shopify-proxy', {
+      const { data, error } = await supabase.functions.invoke(shopifyProxy(), {
         body: {
           action: 'mark_fulfilled',
           fulfillmentOrderId: order.fulfillmentOrderId,
