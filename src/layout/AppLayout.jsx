@@ -11,7 +11,7 @@ export default function AppLayout() {
   const match = findPage(location.pathname);
 
   useEffect(() => {
-    document.title = match ? `${match.page.label} | Rocket Operation` : 'Rocket Operation';
+    document.title = match ? `${match.page.label} | Rocket Logistics` : 'Rocket Logistics';
   }, [match]);
 
   return (
@@ -68,31 +68,9 @@ function TopBar({ activeModuleId }) {
       <div className="mx-auto max-w-[1400px] px-4 sm:px-6 lg:px-10 h-14 flex items-stretch gap-6">
         <Link to="/" className="flex items-center shrink-0">
           <span className="font-display font-extrabold [font-stretch:72%] text-[1.35rem] leading-none tracking-tight">
-            Rocket Operation
+            Rocket Logistics
           </span>
         </Link>
-
-        {/* Company: a switcher for admins, a plain label for everyone else */}
-        <div className="hidden lg:flex items-center shrink-0">
-          {canSwitchBusiness ? (
-            <select
-              value={business?.id || ''}
-              onChange={(e) => switchBusiness(e.target.value)}
-              aria-label="Company"
-              className="h-8 rounded-md bg-rail-hover text-white text-[0.85rem] font-semibold pl-2.5 pr-7 border border-white/15 cursor-pointer focus:outline-none focus:ring-2 focus:ring-hivis"
-            >
-              {businesses.map((b) => (
-                <option key={b.id} value={b.id} className="text-ink">
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span className="text-[0.85rem] font-semibold text-white/90 px-2.5 py-1 rounded-md bg-rail-hover">
-              {business?.name}
-            </span>
-          )}
-        </div>
 
         {/* Desktop menu */}
         <nav className="hidden lg:flex items-stretch gap-1" aria-label="Main">
@@ -161,8 +139,28 @@ function TopBar({ activeModuleId }) {
           })}
         </nav>
 
-        {/* Desktop user menu */}
-        <div className="hidden lg:flex items-stretch ml-auto relative">
+        {/* Right side: company (admins can switch it) next to the account menu */}
+        <div className="hidden lg:flex items-center ml-auto gap-3">
+          {canSwitchBusiness ? (
+            <select
+              value={business?.id || ''}
+              onChange={(e) => switchBusiness(e.target.value)}
+              aria-label="Company"
+              className="h-8 rounded-md bg-rail-hover text-white text-[0.85rem] font-semibold pl-2.5 pr-7 border border-white/15 cursor-pointer focus:outline-none focus:ring-2 focus:ring-hivis"
+            >
+              {businesses.map((b) => (
+                <option key={b.id} value={b.id} className="text-ink">
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="text-[0.85rem] font-semibold text-white/90 px-2.5 py-1 rounded-md bg-rail-hover">
+              {business?.name}
+            </span>
+          )}
+
+          <div className="relative flex items-stretch self-stretch">
           <button
             type="button"
             aria-expanded={openMenu === 'user'}
@@ -184,6 +182,7 @@ function TopBar({ activeModuleId }) {
               </button>
             </div>
           )}
+          </div>
         </div>
 
         {/* Mobile menu button */}

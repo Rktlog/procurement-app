@@ -22,7 +22,7 @@ export default function LoginPage() {
         <span className="font-display font-extrabold [font-stretch:68%] text-[3.2rem] sm:text-[4.5rem] lg:text-[6rem] leading-[0.88] tracking-tight">
           Rocket
           <br />
-          Operation
+          Logistics
         </span>
         <p className="mt-8 max-w-[34ch] text-rail-text text-[0.95rem]">
           Purchasing, fulfillment and invoicing for the Rocket Logistics warehouse.

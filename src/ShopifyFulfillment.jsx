@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useStepParam } from './app/useStepParam';
 import StepBar from './layout/StepBar';
 import AddressEditor from './AddressEditor';
+import AusPostTrackingTab from './Ausposttrackingtab';
 import { supabase, shopifyProxy } from './supabaseClient';
 import { PDFDocument } from 'pdf-lib';
 import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
@@ -72,12 +73,6 @@ export default function ShopifyFulfillment() {
   const [downloadError, setDownloadError] = useState({});
 
   // --- Tracking (Tab 5) ---
-  const [trackingRows, setTrackingRows] = useState([]);
-  const [trackingLoading, setTrackingLoading] = useState(false);
-  const [trackingError, setTrackingError] = useState(null);
-  const [checkingStatus, setCheckingStatus] = useState(false);
-  const [statusResults, setStatusResults] = useState({});
-  const [trackingSearchTerm, setTrackingSearchTerm] = useState('');
 
   const [carrierMap, setCarrierMap] = useState({});
   const [trackingMap, setTrackingMap] = useState({});
@@ -525,6 +520,9 @@ export default function ShopifyFulfillment() {
           `Fetched ${parsedOrders.length} unfulfilled orders from Shopify.` +
           (skippedNoFulfillmentOrder > 0
             ? ` ${skippedNoFulfillmentOrder} more came back but were skipped: Shopify gave this app no open fulfillment order for them. Open "Details" at the top right to see why.`
+            : '') +
+          (data.truncated
+            ? ` Showing the newest ${data.fetched} orders; there are more in Shopify. Fulfil these, then fetch again.`
             : ''),
       });
     } catch (err) {
@@ -1112,73 +1110,6 @@ export default function ShopifyFulfillment() {
     setDownloadingKey(null);
   };
 
-  // ===========================================================
-  // TAB 5: Tracking
-  // ===========================================================
-  const loadTrackingRows = async () => {
-    setTrackingLoading(true);
-    setTrackingError(null);
-    try {
-      const { data, error } = await supabase.functions.invoke('cin7-proxy', { body: { action: 'list_auspost_manifests' } });
-      if (error) throw error;
-      if (!data.success) throw new Error(data.error);
-
-      const flattened = [];
-      (data.manifests || []).forEach((m) => {
-        (m.shipments || []).forEach((s) => {
-          if (s.tracking_number) {
-            flattened.push({ orderReference: s.shipment_reference || '—', customerName: s.customer_name || '—', trackingNumber: s.tracking_number, bookedAt: m.created_at });
-          }
-        });
-      });
-      setTrackingRows(flattened);
-    } catch (err) {
-      setTrackingError(err.message);
-    }
-    setTrackingLoading(false);
-  };
-
-  const visibleTrackingRows = trackingRows.filter((r) => {
-    if (!trackingSearchTerm.trim()) return true;
-    const q = trackingSearchTerm.toLowerCase();
-    return (
-      r.orderReference.toLowerCase().includes(q) ||
-      r.trackingNumber.toLowerCase().includes(q) ||
-      (r.customerName || '').toLowerCase().includes(q)
-    );
-  });
-
-  const handleCheckTrackingStatus = async () => {
-    if (visibleTrackingRows.length === 0) return;
-    setCheckingStatus(true);
-
-    for (let i = 0; i < visibleTrackingRows.length; i += 10) {
-      const batch = visibleTrackingRows.slice(i, i + 10);
-      try {
-        const { data, error } = await supabase.functions.invoke('cin7-proxy', {
-          body: { action: 'track_auspost_items', auspostTrackingIds: batch.map((r) => r.trackingNumber) },
-        });
-        if (error) throw error;
-        if (!data.success) throw new Error(data.error);
-
-        const newResults = {};
-        (data.result?.tracking_results || []).forEach((tr) => {
-          const status = tr.status || tr.consignment?.status || tr.trackable_items?.[0]?.status || (tr.errors?.length ? `Error: ${tr.errors[0].name}` : 'Unknown');
-          newResults[tr.tracking_id] = status;
-        });
-        setStatusResults((prev) => ({ ...prev, ...newResults }));
-      } catch (err) {
-        const failedResults = {};
-        batch.forEach((r) => { failedResults[r.trackingNumber] = `Check failed: ${err.message}`; });
-        setStatusResults((prev) => ({ ...prev, ...failedResults }));
-      }
-      if (i + 10 < visibleTrackingRows.length) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-    }
-    setCheckingStatus(false);
-  };
-
   const handleBulkQueueSelected = async () => {
     if (selectedOrderIds.length === 0) return setMsg({ type: 'error', text: 'No orders selected.' });
 
@@ -1314,7 +1245,6 @@ export default function ShopifyFulfillment() {
   // that step's data, same as clicking it in the step bar.
   useEffect(() => {
     if (activeTab === 'manifests') loadManifests();
-    if (activeTab === 'tracking') loadTrackingRows();
     if (activeTab === 'completed') fetchCompletedHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1352,7 +1282,6 @@ export default function ShopifyFulfillment() {
         onChange={(id) => {
           setActiveTab(id);
           if (id === 'manifests') loadManifests();
-          if (id === 'tracking') loadTrackingRows();
           if (id === 'completed') fetchCompletedHistory();
         }}
         steps={[
@@ -2038,79 +1967,8 @@ export default function ShopifyFulfillment() {
         </div>
       )}
 
-      {/* TAB 5: TRACKING */}
-      {activeTab === 'tracking' && (
-        <div className="bg-white border border-slate-200 rounded-xl shadow-xs">
-          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-bold text-slate-700">Tracking {trackingRows.length ? `(${trackingRows.length})` : ''}</span>
-            <div className="flex items-center gap-2">
-              <input
-                value={trackingSearchTerm}
-                onChange={(e) => setTrackingSearchTerm(e.target.value)}
-                placeholder="Search order or tracking #"
-                className="text-[11px] bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1.5 w-52"
-              />
-              <button
-                onClick={loadTrackingRows}
-                disabled={trackingLoading}
-                className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-1.5 px-3 rounded-md cursor-pointer disabled:opacity-50"
-              >
-                {trackingLoading ? 'Loading...' : '🔄 Refresh'}
-              </button>
-              <button
-                onClick={handleCheckTrackingStatus}
-                disabled={checkingStatus || visibleTrackingRows.length === 0}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-1.5 px-3 rounded-md cursor-pointer disabled:opacity-50"
-              >
-                {checkingStatus ? 'Checking...' : `📍 Check Status (${visibleTrackingRows.length})`}
-              </button>
-            </div>
-          </div>
-
-          {trackingError && (
-            <div className="m-3 p-2.5 bg-red-50 border border-red-200 text-red-700 text-[11px] rounded-md">
-              Couldn't load tracking data: {trackingError}
-            </div>
-          )}
-
-          {!trackingError && !trackingLoading && trackingRows.length === 0 && (
-            <div className="p-8 text-center text-xs text-slate-400">
-              No tracked shipments yet. They'll appear here automatically once a manifest is booked in step 3.
-            </div>
-          )}
-
-          {trackingRows.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-y border-slate-200 text-slate-700 font-bold">
-                    <th className="p-3">Order Number</th>
-                    <th className="p-3">Customer</th>
-                    <th className="p-3">Tracking Number</th>
-                    <th className="p-3">Booked</th>
-                    <th className="p-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {visibleTrackingRows.map((r) => {
-                    const status = statusResults[r.trackingNumber];
-                    const color = !status ? 'text-slate-400' : status.toLowerCase().includes('delivered') ? 'text-emerald-600 font-bold' : status.toLowerCase().includes('error') ? 'text-red-600 font-bold' : 'text-slate-700 font-semibold';
-                    return (
-                      <tr key={r.trackingNumber} className="hover:bg-slate-50/80">
-                        <td className="p-3 font-bold text-slate-900">{r.orderReference}</td>
-                        <td className="p-3 text-slate-700">{r.customerName}</td>
-                        <td className="p-3 font-mono text-slate-600">{r.trackingNumber}</td>
-                        <td className="p-3 text-slate-500">{r.bookedAt ? new Date(r.bookedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}</td>
-                        <td className={`p-3 ${color}`}>{status || 'Not checked'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+      {/* TAB 5: TRACKING (shared with the Pantone page; remembers delivered parcels) */}
+      {activeTab === 'tracking' && <AusPostTrackingTab />}
 
       {/* TAB 6: COMPLETED ORDERS */}
       {activeTab === 'completed' && (
