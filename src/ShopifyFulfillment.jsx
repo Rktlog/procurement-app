@@ -4,7 +4,7 @@ import StepBar from './layout/StepBar';
 import AddressEditor from './AddressEditor';
 import { supabase } from './supabaseClient';
 import { PDFDocument } from 'pdf-lib';
-import { INTL_PRODUCT_ID, SENDER_ADDRESS, SENDER_ADDRESS_INTL, buildInternationalItem, checkInternationalTo, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
+import { INTL_PRODUCT_ID, SENDER_ADDRESS, normaliseCountryCode, truncateField, buildAddressLines, LABEL_LAYOUT_A6 } from './Auspostconstants';
 
 const CARRIERS = ['Australia Post', 'StarTrack', 'DHL', 'CouriersPlease', 'Other'];
 
@@ -392,7 +392,7 @@ export default function ShopifyFulfillment() {
       source: 'shopify',
       queue_data: newQueue,
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id, source' });
+    }, { onConflict: 'user_id,source,business_id' });
   };
 
   const fetchCompletedHistory = async () => {
@@ -825,23 +825,7 @@ export default function ShopifyFulfillment() {
           height: String(entry.height),
           weight: String(entry.weight),
         };
-        let shipmentItem = domesticItem;
-        if (isInternational) {
-          const toError = checkInternationalTo(toAddress);
-          if (toError) throw new Error(toError);
-          // Shopify line items as queued for this parcel. Price and SKU
-          // come from the shopify-proxy order fetch (see parsedItems).
-          const contents = (entry.selected_items || order.lineItems || []).map((l) => ({
-            sku: l.sku,
-            description: l.title,
-            quantity: l.dispatch_qty ?? l.remaining_qty,
-            unitValue: l.unit_price,
-            unitWeight: l.unit_weight_kg,
-          }));
-          const intl = buildInternationalItem({ reference: orderNumber, entry, contents });
-          if (intl.error) throw new Error(intl.error);
-          shipmentItem = intl.item;
-        }
+        const shipmentItem = domesticItem;
 
         const shipData = await callAusPostAction({
           action: 'create_auspost_shipment',
@@ -852,7 +836,7 @@ export default function ShopifyFulfillment() {
               // "Sender reference 1" in the old CSV template
               // corresponds to in the JSON API.
               customer_reference_1: truncateField(orderNumber, 50),
-              from: isInternational ? SENDER_ADDRESS_INTL : SENDER_ADDRESS,
+              from: SENDER_ADDRESS,
               to: toAddress,
               items: [shipmentItem],
             },

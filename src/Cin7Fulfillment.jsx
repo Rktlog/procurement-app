@@ -175,7 +175,7 @@ export default function Cin7Fulfillment() {
       source: 'pantone',
       queue_data: newQueue,
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id, source' });
+    }, { onConflict: 'user_id,source,business_id' });
   };
 
 
