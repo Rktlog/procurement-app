@@ -4,6 +4,8 @@ import { supabase } from './supabaseClient';
 const AVAILABLE_APPS = [
   { id: 'procurement', label: 'Procurement Hub' },
   { id: 'shipping', label: 'Shipping & Logistics' },
+  { id: 'sales', label: 'Sales & Invoicing' },
+  { id: 'wms', label: 'WMS (Orders & Purchasing)' },
 ];
 
 export default function UserManagementAdmin() {

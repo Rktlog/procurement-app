@@ -19,6 +19,8 @@ const ProcurementSettingsPage = lazy(() => import('./pages/ProcurementSettingsPa
 const PantoneFulfillmentPage = lazy(() => import('./pages/PantoneFulfillmentPage'));
 const ShopifyFulfillmentPage = lazy(() => import('./pages/ShopifyFulfillmentPage'));
 const CreateInvoicePage = lazy(() => import('./pages/CreateInvoicePage'));
+const WmsOrdersPage = lazy(() => import('./pages/WmsOrdersPage'));
+const WmsPurchasesPage = lazy(() => import('./pages/WmsPurchasesPage'));
 const UserAccessPage = lazy(() => import('./pages/UserAccessPage'));
 
 export default function App() {
@@ -53,6 +55,12 @@ function AuthGate() {
           <Route path="longterm" element={<LongtermOrdersPage />} />
           <Route path="search" element={<ProductSearchPage />} />
           <Route path="settings" element={<ProcurementSettingsPage />} />
+        </Route>
+
+        <Route path="wms" element={<RequireApp appId="wms" />}>
+          <Route index element={<ModuleIndex appId="wms" />} />
+          <Route path="orders" element={<WmsOrdersPage />} />
+          <Route path="purchases" element={<WmsPurchasesPage />} />
         </Route>
 
         <Route path="shipping" element={<RequireApp appId="shipping" />}>

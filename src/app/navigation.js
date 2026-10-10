@@ -1,6 +1,7 @@
 import {
   ClipboardList, Search, AlertTriangle, CalendarRange, SlidersHorizontal,
   Palette, ShoppingBag, FileText, Users, Package, Truck, Receipt, ShieldCheck,
+  Warehouse, ShoppingCart, PackagePlus,
 } from 'lucide-react';
 
 // Single source of truth for every page in the app. The sidebar, the home
@@ -48,6 +49,28 @@ export const MODULES = [
         label: 'Supplier lead time',
         description: 'Set how long each supplier takes to deliver, so reorders land before stock runs out.',
         icon: SlidersHorizontal,
+      },
+    ],
+  },
+  {
+    appId: 'wms',
+    title: 'WMS',
+    summary: 'Orders, purchasing and receiving stock into Shopify.',
+    icon: Warehouse,
+    pages: [
+      {
+        path: '/wms/orders',
+        label: 'Orders',
+        description: 'Every Shopify order with all its details: items, customer, payment, fulfilment and history.',
+        icon: ShoppingCart,
+        platforms: ['shopify'],
+      },
+      {
+        path: '/wms/purchases',
+        label: 'Purchases',
+        description: 'Create purchase orders. Receiving one adds the stock straight to Shopify.',
+        icon: PackagePlus,
+        platforms: ['shopify'],
       },
     ],
   },
