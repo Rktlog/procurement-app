@@ -1,7 +1,7 @@
 import {
   ClipboardList, Search, AlertTriangle, CalendarRange, SlidersHorizontal,
   Palette, ShoppingBag, FileText, Users, Package, Truck, Receipt, ShieldCheck,
-  Warehouse, ShoppingCart, PackagePlus,
+  Warehouse, ShoppingCart, PackagePlus, Handshake, Sparkles,
 } from 'lucide-react';
 
 // Single source of truth for every page in the app. The sidebar, the home
@@ -70,6 +70,20 @@ export const MODULES = [
         label: 'Purchases',
         description: 'Create purchase orders. Receiving one adds the stock straight to Shopify.',
         icon: PackagePlus,
+        platforms: ['shopify'],
+      },
+      {
+        path: '/wms/dropship',
+        label: 'Dropship',
+        description: 'Orders your suppliers ship straight to the customer: emailed automatically, completed in Shopify when they reply with tracking.',
+        icon: Handshake,
+        platforms: ['shopify'],
+      },
+      {
+        path: '/wms/assistant',
+        label: 'Assistant',
+        description: 'Ask about orders, stock and suppliers in plain English. It can look things up in Shopify and Gmail and write email drafts for you to send.',
+        icon: Sparkles,
         platforms: ['shopify'],
       },
     ],

@@ -33,12 +33,15 @@ export default function WmsPurchases() {
   const [detail, setDetail] = useState(null);
   const [detailError, setDetailError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [mail, setMail] = useState(null);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoNote, setAutoNote] = useState(null);
 
   const loadList = useCallback(async () => {
     setLoading(true);
     const { data, error } = await supabase
       .from('purchases')
-      .select('id, number, supplier_name, status, order_date, eta, purchase_lines(qty, received_qty, cost)')
+      .select('id, number, supplier_name, status, order_date, eta, auto_generated, emailed_at, purchase_lines(qty, received_qty, cost)')
       .order('order_date', { ascending: false })
       .order('number', { ascending: false })
       .limit(200);
@@ -73,7 +76,31 @@ export default function WmsPurchases() {
   useEffect(() => {
     loadList();
     loadSuppliers();
+    wms('mail_status').then(setMail).catch(() => setMail(null));
   }, [loadList, loadSuppliers]);
+
+  // Checks stock against each product's re-order levels and drafts what's needed.
+  const runAuto = async () => {
+    setAutoBusy(true);
+    setAutoNote(null);
+    try {
+      const r = await wms('run_auto_orders');
+      const sent = r.orders.filter((o) => o.sent).length;
+      const failed = r.orders.filter((o) => o.error);
+      setAutoNote({
+        type: failed.length ? 'error' : 'success',
+        text: r.orders.length === 0
+          ? 'Nothing needs re-ordering right now.'
+          : `${r.orders.length} order${r.orders.length === 1 ? '' : 's'} drafted or updated (${r.orders.reduce((n, o) => n + o.units, 0)} units).` +
+            (sent ? ` ${sent} placed and emailed automatically.` : '') +
+            failed.map((o) => ` ${o.number}: ${o.error}`).join(''),
+      });
+      await loadList();
+    } catch (err) {
+      setAutoNote({ type: 'error', text: err.message });
+    }
+    setAutoBusy(false);
+  };
 
   const select = (id) => {
     setSelectedId(id);
@@ -105,6 +132,14 @@ export default function WmsPurchases() {
           >
             <Plus size={16} /> New purchase order
           </button>
+          <button type="button" onClick={runAuto} disabled={autoBusy} className={`${buttonPlain} w-full`}>
+            {autoBusy ? 'Checking stock' : 'Draft orders for low stock'}
+          </button>
+          {autoNote && (
+            <div role={autoNote.type === 'error' ? 'alert' : 'status'} className={`p-2 text-xs rounded-md border ${autoNote.type === 'error' ? 'bg-red-50 border-red-200 text-red-700' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+              {autoNote.text}
+            </div>
+          )}
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter purchase orders">
             {FILTERS.map(([value, label]) => (
               <button
@@ -154,8 +189,10 @@ export default function WmsPurchases() {
                         {p.eta ? ` · due ${fmtDate(p.eta)}` : ''}
                         {p.status !== 'DRAFT' && p.status !== 'VOIDED' ? ` · ${received} of ${ordered} received` : ''}
                       </div>
-                      <div className="mt-1">
+                      <div className="mt-1 flex items-center gap-1.5">
                         <Badge status={p.status}>{p.status === 'COMPLETED' ? 'Received' : p.status === 'VOIDED' ? 'Cancelled' : nice(p.status)}</Badge>
+                        {p.auto_generated && <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[0.7rem] font-bold text-violet-800">Auto</span>}
+                        {p.emailed_at && <span className="text-[0.7rem] text-slate-500">Emailed</span>}
                       </div>
                     </div>
                     <div className="text-sm font-bold text-ink whitespace-nowrap">
@@ -211,6 +248,8 @@ export default function WmsPurchases() {
         {mode === 'view' && detail && (
           <PoDetail
             po={detail}
+            suppliers={suppliers}
+            mail={mail}
             notice={notice}
             setNotice={setNotice}
             onEdit={() => setMode('edit')}
@@ -223,8 +262,11 @@ export default function WmsPurchases() {
 }
 
 // ------------------------------------------------------------------ detail
-function PoDetail({ po, notice, setNotice, onEdit, onChanged }) {
+function PoDetail({ po, suppliers, mail, notice, setNotice, onEdit, onChanged }) {
   const [busy, setBusy] = useState(false);
+  const [emailIt, setEmailIt] = useState(true);
+  const supplier = suppliers.find((s) => s.id === po.supplier_id);
+  const canEmail = !!(mail?.connected && supplier?.email);
   const [error, setError] = useState(null);
   const [receiving, setReceiving] = useState(false);
 
@@ -240,8 +282,9 @@ function PoDetail({ po, notice, setNotice, onEdit, onChanged }) {
     setError(null);
     setNotice(null);
     try {
-      await fn();
-      if (success) setNotice({ type: 'success', text: success });
+      const result = await fn();
+      const text = typeof success === 'function' ? success(result) : success;
+      if (text) setNotice({ type: 'success', text });
       await onChanged();
     } catch (err) {
       setError(err.message);
@@ -266,7 +309,9 @@ function PoDetail({ po, notice, setNotice, onEdit, onChanged }) {
             <Badge status={po.status}>{po.status === 'COMPLETED' ? 'Received' : po.status === 'VOIDED' ? 'Cancelled' : nice(po.status)}</Badge>
             <span>Created {fmtDate(po.order_date)}</span>
             {po.eta && <span>Due {fmtDate(po.eta)}</span>}
+            {po.auto_generated && <span className="rounded bg-violet-100 px-1.5 py-0.5 font-bold text-violet-800">Drafted automatically from low stock</span>}
             {po.ordered_at && <span>Ordered {fmtDate(po.ordered_at)}</span>}
+            {po.emailed_at && <span>Emailed {fmtDate(po.emailed_at)}</span>}
             {po.received_at && <span>Fully received {fmtDate(po.received_at)}</span>}
           </div>
         </div>
@@ -278,16 +323,27 @@ function PoDetail({ po, notice, setNotice, onEdit, onChanged }) {
                 type="button"
                 className={buttonPrimary}
                 disabled={busy}
-                onClick={() => run(() => wms('set_purchase_status', { id: po.id, status: 'ORDERED' }), 'Marked as ordered.')}
+                onClick={() =>
+                  run(
+                    () => wms('set_purchase_status', { id: po.id, status: 'ORDERED', email: emailIt && canEmail }),
+                    (r) => (r.email?.sent ? `Marked as ordered and emailed to ${r.email.to}.` : r.email ? `Marked as ordered, but the email didn't send: ${r.email.error}` : 'Marked as ordered.')
+                  )
+                }
               >
                 Mark as ordered
               </button>
             </>
           )}
           {canReceive && (
-            <button type="button" className={buttonPrimary} disabled={busy || pending.length > 0} onClick={() => setReceiving(true)}>
-              Receive stock
-            </button>
+            <>
+              <button type="button" className={buttonPlain} disabled={busy || !canEmail} title={canEmail ? '' : mail?.connected ? 'This supplier has no email address saved' : 'Gmail is not connected'}
+                onClick={() => run(() => wms('purchase_email', { id: po.id }), (r) => `Emailed to ${r.to}.`)}>
+                {po.emailed_at ? 'Email again' : 'Email supplier'}
+              </button>
+              <button type="button" className={buttonPrimary} disabled={busy || pending.length > 0} onClick={() => setReceiving(true)}>
+                Receive stock
+              </button>
+            </>
           )}
           {(po.status === 'DRAFT' || po.status === 'ORDERED') && !hasReceipts && (
             <button
@@ -304,6 +360,14 @@ function PoDetail({ po, notice, setNotice, onEdit, onChanged }) {
             </button>
           )}
         </div>
+        {po.status === 'DRAFT' && (
+          <label className="w-full flex items-center gap-2 text-sm text-slate-700">
+            <input type="checkbox" checked={emailIt && canEmail} disabled={!canEmail} onChange={(e) => setEmailIt(e.target.checked)} />
+            {canEmail
+              ? `Email this order to ${supplier.email} when I mark it as ordered`
+              : mail?.connected ? `Can't email: ${po.supplier_name} has no email address saved` : "Can't email: Gmail isn't connected yet"}
+          </label>
+        )}
       </header>
 
       {notice && (

@@ -17,6 +17,25 @@ export async function wms(action, body = {}) {
   return data;
 }
 
+// Same look for inputs and buttons on every WMS screen.
+export const inputClass =
+  'w-full h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/20';
+export const buttonPrimary =
+  'inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold disabled:opacity-60 cursor-pointer';
+export const buttonPlain =
+  'inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-ink hover:border-blue-600 hover:text-blue-700 disabled:opacity-60 cursor-pointer';
+
+// The AI assistant is its own function; it answers with text and any email drafts it wrote.
+export async function askAssistant(messages) {
+  const { data, error } = await supabase.functions.invoke('metrobaby-assistant', { body: { messages } });
+  if (error) {
+    const detail = await error.context?.json?.().catch(() => null);
+    throw new Error(detail?.error || error.message);
+  }
+  if (!data?.success) throw new Error(data?.error || 'No answer came back.');
+  return data;
+}
+
 export const fmtMoney = (n, currency = 'AUD') =>
   new Intl.NumberFormat('en-AU', { style: 'currency', currency: currency || 'AUD' }).format(Number(n) || 0);
 
@@ -39,7 +58,7 @@ const INFO = 'bg-blue-100 text-blue-800';
 
 export const statusTone = (s) =>
   ({
-    PAID: GOOD, FULFILLED: GOOD, SUCCESS: GOOD, COMPLETED: GOOD, APPLIED: GOOD, OPEN: INFO, IN_PROGRESS: INFO, ORDERED: INFO,
+    PAID: GOOD, FULFILLED: GOOD, SUCCESS: GOOD, COMPLETED: GOOD, APPLIED: GOOD, OPEN: INFO, IN_PROGRESS: INFO, ORDERED: INFO, SENT: INFO, NEEDS_REVIEW: WARN,
     PARTIALLY_FULFILLED: WARN, PARTIALLY_PAID: WARN, PARTIALLY_RECEIVED: WARN, PENDING: WARN, AUTHORIZED: WARN, UNFULFILLED: WARN,
     ON_HOLD: WARN, SCHEDULED: WARN, DRAFT: NEUTRAL, CLOSED: NEUTRAL,
     VOIDED: BAD, REFUNDED: BAD, CANCELLED: BAD, FAILURE: BAD, FAILED: BAD,

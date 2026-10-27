@@ -21,6 +21,8 @@ const ShopifyFulfillmentPage = lazy(() => import('./pages/ShopifyFulfillmentPage
 const CreateInvoicePage = lazy(() => import('./pages/CreateInvoicePage'));
 const WmsOrdersPage = lazy(() => import('./pages/WmsOrdersPage'));
 const WmsPurchasesPage = lazy(() => import('./pages/WmsPurchasesPage'));
+const WmsDropshipPage = lazy(() => import('./pages/WmsDropshipPage'));
+const WmsAssistantPage = lazy(() => import('./pages/WmsAssistantPage'));
 const UserAccessPage = lazy(() => import('./pages/UserAccessPage'));
 
 export default function App() {
@@ -61,6 +63,8 @@ function AuthGate() {
           <Route index element={<ModuleIndex appId="wms" />} />
           <Route path="orders" element={<WmsOrdersPage />} />
           <Route path="purchases" element={<WmsPurchasesPage />} />
+          <Route path="dropship" element={<WmsDropshipPage />} />
+          <Route path="assistant" element={<WmsAssistantPage />} />
         </Route>
 
         <Route path="shipping" element={<RequireApp appId="shipping" />}>
