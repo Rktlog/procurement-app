@@ -1,7 +1,8 @@
 import {
   ClipboardList, Search, AlertTriangle, CalendarRange, SlidersHorizontal,
   Palette, ShoppingBag, FileText, Users, Package, Truck, Receipt, ShieldCheck,
-  Warehouse, ShoppingCart, PackagePlus, Handshake, Sparkles,
+  Warehouse, ShoppingCart, PackagePlus, Handshake, Sparkles,Mail,
+  Inbox,
 } from 'lucide-react';
 
 // Single source of truth for every page in the app. The sidebar, the home
