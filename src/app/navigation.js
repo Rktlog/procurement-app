@@ -89,6 +89,21 @@ export const MODULES = [
     ],
   },
   {
+  appId: 'inbox',
+  title: 'Inbox',
+  summary: 'Supplier email sorted by supplier, with replies drafted for you.',
+  icon: Mail,
+  pages: [
+    {
+      path: '/inbox/mail',
+      label: 'Supplier inbox',
+      description: 'Gmail grouped by supplier. Claude says what needs a reply, drafts it and builds your morning to-do. Nothing sends until you click Send.',
+      icon: Inbox,
+      platforms: ['cin7'],
+    },
+  ],
+},
+  {
     appId: 'shipping',
     title: 'Shipping',
     summary: 'Pick, label and manifest AusPost shipments.',
