@@ -35,6 +35,7 @@ export default function Inbox() {
   const [threads, setThreads] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [autoFind, setAutoFind] = useState(false);
   const [progress, setProgress] = useState('');
   const [notice, setNotice] = useState(
     params.get('gmail') ? { type: 'success', text: 'Gmail is connected.' }
@@ -87,6 +88,7 @@ export default function Inbox() {
   const totalNeeds = groups.reduce((n, g) => (g.kind === 'unmatched' ? n : n + g.needs), 0);
 
   const pick = (v) => { setView(v); setSelectedId(null); };
+  const findSuppliers = () => { setAutoFind(true); setView('settings'); setSelectedId(null); };
   const navBtn = (key, label, count, extra) => (
     <button key={key} type="button" onClick={() => pick(key)}
       className={`w-full flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm cursor-pointer ${view === key ? 'bg-blue-50 text-blue-800 font-semibold' : 'text-slate-700 hover:bg-slate-100'}`}>
@@ -126,9 +128,9 @@ export default function Inbox() {
 
         {/* ----------------------------------------------- middle and right */}
         {view === 'settings' ? (
-          <div className="lg:col-span-2"><SettingsView mail={mail} reloadStatus={loadStatus} onChanged={refreshAll} /></div>
+          <div className="lg:col-span-2"><SettingsView mail={mail} reloadStatus={loadStatus} onChanged={refreshAll} autoFind={autoFind} onFindStarted={() => setAutoFind(false)} /></div>
         ) : view === 'today' ? (
-          <div className="lg:col-span-2"><TodayView overview={overview} reload={loadOverview} onOpen={(id) => { setView('all'); setFilter(''); setSelectedId(id); }} connected={mail.connected} mail={mail} setNotice={setNotice} /></div>
+          <div className="lg:col-span-2"><TodayView overview={overview} reload={loadOverview} onOpen={(id) => { setView('all'); setFilter(''); setSelectedId(id); }} connected={mail.connected} mail={mail} setNotice={setNotice} unfiled={unmatched?.total || 0} onFind={findSuppliers} /></div>
         ) : (
           <>
             <section aria-label="Conversations" className={`rounded-xl border border-slate-200 bg-white ${selectedId ? 'hidden lg:block' : ''}`}>
@@ -174,7 +176,7 @@ export default function Inbox() {
 }
 
 // ------------------------------------------------------------------ today
-function TodayView({ overview, reload, onOpen, connected, mail, setNotice }) {
+function TodayView({ overview, reload, onOpen, connected, mail, setNotice, unfiled, onFind }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const run = async (fn) => { setBusy(true); try { await fn(); await reload(); } catch (err) { setNotice({ type: 'error', text: err.message }); } setBusy(false); };
@@ -200,7 +202,17 @@ function TodayView({ overview, reload, onOpen, connected, mail, setNotice }) {
   );
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3 max-w-2xl">
+    <div className="space-y-3 max-w-2xl">
+    {unfiled > 0 && (
+      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-amber-950">{unfiled} conversations are from senders that aren't filed yet</div>
+          <div className="text-xs text-amber-900">Claude only reads mail from saved suppliers and forwarders. It can suggest who each sender is, and you approve every one.</div>
+        </div>
+        <button type="button" className={buttonPrimary} onClick={onFind}><Sparkles size={14} />Find suppliers from my mail</button>
+      </div>
+    )}
+    <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-base font-bold text-ink">Today's to-do</h2>
         <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(() => inbox('build_todo', { force: true }))}><Sparkles size={14} />Rebuild from email</button>
@@ -218,6 +230,7 @@ function TodayView({ overview, reload, onOpen, connected, mail, setNotice }) {
           onKeyDown={(e) => { if (e.key === 'Enter' && text.trim()) run(async () => { await inbox('add_todo', { text }); setText(''); }); }} />
         <button type="button" className={buttonPlain} disabled={busy || !text.trim()} onClick={() => run(async () => { await inbox('add_todo', { text }); setText(''); })}>Add</button>
       </div>
+    </div>
     </div>
   );
 }
@@ -424,7 +437,7 @@ function ConnectCard({ mail, setNotice }) {
   );
 }
 
-function SettingsView({ mail, reloadStatus, onChanged }) {
+function SettingsView({ mail, reloadStatus, onChanged, autoFind, onFindStarted }) {
   const [data, setData] = useState(null);
   const [sig, setSig] = useState(mail.settings?.signature || '');
   const [auto, setAuto] = useState(mail.settings?.auto_draft !== false);
@@ -444,7 +457,7 @@ function SettingsView({ mail, reloadStatus, onChanged }) {
   if (!data) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4 max-w-5xl">
       <Notice n={msg} />
       {!mail.connected ? <ConnectCard mail={mail} setNotice={setMsg} /> : (
         <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
@@ -452,6 +465,11 @@ function SettingsView({ mail, reloadStatus, onChanged }) {
           <p className="text-sm text-slate-700">Connected as <b>{mail.email}</b>. Replies are sent from {mail.send_as}.</p>
           <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(async () => { await inbox('mail_disconnect'); await reloadStatus(); }, 'Gmail disconnected.')}>Disconnect</button>
         </div>
+      )}
+
+      {mail.connected && (
+        <FindSuppliers suppliers={data.suppliers} forwarderLabels={[...new Set(data.contacts.filter((c) => c.kind === 'forwarder' && c.label).map((c) => c.label))]}
+          autoRun={autoFind} onStarted={onFindStarted} setMsg={setMsg} onDone={() => { load(); onChanged(); }} />
       )}
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
@@ -499,6 +517,141 @@ function SettingsView({ mail, reloadStatus, onChanged }) {
         <button type="button" className={buttonPrimary} disabled={busy} onClick={() => run(async () => { await inbox('save_mail_settings', { signature: sig, auto_draft: auto }); await reloadStatus(); }, 'Saved.')}>Save</button>
         <p className="text-xs text-slate-500">{mail.ai_configured ? 'Claude is switched on.' : 'Claude is not set up. Add ANTHROPIC_API_KEY in Supabase secrets.'}</p>
       </div>
+    </div>
+  );
+}
+
+// Claude suggests who each unfiled sender is. Nothing is saved until a person accepts it.
+const LEVEL = { high: ['High match', 'bg-emerald-100 text-emerald-800'], likely: ['Likely', 'bg-blue-100 text-blue-800'], low: ['Not sure', 'bg-amber-100 text-amber-800'] };
+
+function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone, setMsg }) {
+  const [state, setState] = useState('idle'); // idle | working | done
+  const [rows, setRows] = useState([]);
+  const [meta, setMeta] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const supByName = useMemo(() => new Map(suppliers.map((x) => [x.name.trim().toLowerCase(), x])), [suppliers]);
+
+  const find = useCallback(async () => {
+    setState('working');
+    setMsg(null);
+    try {
+      const r = await inbox('suggest_contacts');
+      setRows(r.suggestions.map((x) => ({ ...x, pick: x.kind === 'forwarder' ? 'forwarder' : 'supplier', supplierName: x.supplier_name || '', label: x.label || '' })));
+      setMeta({ automated: r.automated, scanned: r.scanned, failed: r.failed });
+      setState('done');
+    } catch (err) {
+      setMsg({ type: 'error', text: err.message });
+      setState('idle');
+    }
+  }, [setMsg]);
+
+  useEffect(() => { if (autoRun) { onStarted?.(); find(); } }, [autoRun]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const update = (key, patch) => setRows((list) => list.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const toItem = (r) => {
+    const sup = r.pick === 'supplier' ? supByName.get(r.supplierName.trim().toLowerCase()) : null;
+    if (r.pick === 'supplier' && !sup) return { error: 'Pick a supplier from the list.' };
+    if (r.pick === 'forwarder' && !r.label.trim()) return { error: 'Enter the forwarder name.' };
+    return { item: { kind: r.pick, supplier_id: sup?.id || '', label: r.label, email: r.scope === 'email' ? r.email : '', domain: r.scope === 'domain' ? r.domain : '' } };
+  };
+
+  const accept = async (list) => {
+    const ready = list.map((r) => ({ r, ...toItem(r) }));
+    const bad = ready.find((x) => x.error);
+    if (bad && list.length === 1) { setMsg({ type: 'error', text: bad.error }); return; }
+    const good = ready.filter((x) => x.item);
+    if (!good.length) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await inbox('accept_contacts', { items: good.map((x) => x.item) });
+      const done = new Set(good.map((x) => x.r.key));
+      if (!res.errors?.length) setRows((cur) => cur.filter((r) => !done.has(r.key)));
+      setMsg({
+        type: res.errors?.length ? 'error' : 'success',
+        text: `Saved ${res.saved}${res.duplicates ? `, ${res.duplicates} already saved` : ''}. ${res.refiled} conversation(s) filed. Press Check mail now and Claude will read them.${res.errors?.length ? ` Problems: ${res.errors.join('; ')}` : ''}`,
+      });
+      onDone();
+    } catch (err) {
+      setMsg({ type: 'error', text: err.message });
+    }
+    setBusy(false);
+  };
+
+  const high = rows.filter((r) => r.level === 'high' && toItem(r).item);
+  const selectCls = `${inputClass} mt-1`;
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="max-w-2xl">
+          <h2 className="text-base font-bold text-ink">Find suppliers from my mail</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Claude looks at who writes to you (names, addresses and subject lines only, never the email text) and matches them to your suppliers.
+            <b className="text-ink"> Nothing is saved until you accept it.</b> You can change or remove any contact afterwards.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={state === 'done' ? buttonPlain : buttonPrimary} disabled={state === 'working'} onClick={find}>
+            <Sparkles size={14} />{state === 'working' ? 'Looking at your mail' : state === 'done' ? 'Look again' : 'Find suppliers'}
+          </button>
+          {high.length > 0 && <button type="button" className={buttonPrimary} disabled={busy} onClick={() => accept(high)}>Accept all high matches ({high.length})</button>}
+        </div>
+      </div>
+
+      {state === 'working' && <p className="text-sm text-slate-600" role="status">This takes up to a minute when there are many senders.</p>}
+      {state === 'done' && (
+        <>
+          <p className="text-xs text-slate-500">
+            Looked at {meta.scanned} sender group(s). {meta.automated} automated sender(s) (newsletters, notifications) left out.
+            {meta.failed ? ` Some couldn't be checked (${meta.failed}). Press Look again.` : ''}
+          </p>
+          <datalist id="supplier-names">{suppliers.map((x) => <option key={x.id} value={x.name} />)}</datalist>
+          <datalist id="forwarder-names">{forwarderLabels.map((x) => <option key={x} value={x} />)}</datalist>
+          {rows.length === 0 && <p className="text-sm text-slate-600">No suggestions. Every sender is already filed or looks automated.</p>}
+          <ul className="divide-y divide-slate-100 max-h-[70vh] overflow-y-auto pr-1">
+            {rows.map((r) => {
+              const [lvlLabel, lvlTone] = LEVEL[r.level] || LEVEL.low;
+              const who = r.sender_count > 1 && r.domain ? `${r.sender_count} senders at ${r.domain}` : r.senders[0]?.name || r.email;
+              return (
+                <li key={r.key} className="flex flex-wrap items-end gap-3 py-3">
+                  <div className="min-w-[14rem] flex-1">
+                    <div className="text-sm font-bold text-ink break-words">{who}</div>
+                    <div className="text-xs text-slate-500 break-all">{r.sender_count > 1 && r.domain ? r.senders.map((x) => x.email).join(', ') : r.email}</div>
+                    <div className="mt-0.5 text-xs text-slate-600">{r.subjects.join(' · ')}</div>
+                    {r.reason && <div className="mt-0.5 text-xs text-slate-500">{r.reason}</div>}
+                  </div>
+                  <label className="w-32 text-xs font-semibold text-slate-600">Type
+                    <select className={selectCls} value={r.pick} onChange={(e) => update(r.key, { pick: e.target.value })}><option value="supplier">Supplier</option><option value="forwarder">Forwarder</option></select>
+                  </label>
+                  {r.pick === 'supplier' ? (
+                    <label className="w-56 text-xs font-semibold text-slate-600">Supplier
+                      <input className={selectCls} list="supplier-names" value={r.supplierName} placeholder="Start typing a name" onChange={(e) => update(r.key, { supplierName: e.target.value })} />
+                    </label>
+                  ) : (
+                    <label className="w-56 text-xs font-semibold text-slate-600">Forwarder name
+                      <input className={selectCls} list="forwarder-names" value={r.label} onChange={(e) => update(r.key, { label: e.target.value })} />
+                    </label>
+                  )}
+                  <label className="w-44 text-xs font-semibold text-slate-600">Save
+                    <select className={selectCls} value={r.scope} onChange={(e) => update(r.key, { scope: e.target.value })}>
+                      <option value="email">This address only</option>
+                      {r.domain && <option value="domain">Everyone at {r.domain}</option>}
+                    </select>
+                  </label>
+                  <div className="flex flex-col items-start gap-1.5">
+                    <span className={`rounded-full px-2 py-0.5 text-[0.7rem] font-semibold ${lvlTone}`}>{lvlLabel}</span>
+                    <div className="flex gap-1.5">
+                      <button type="button" className={buttonPrimary} disabled={busy} onClick={() => accept([r])}>Accept</button>
+                      <button type="button" className={buttonPlain} disabled={busy} onClick={() => setRows((cur) => cur.filter((x) => x.key !== r.key))}>Skip</button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
