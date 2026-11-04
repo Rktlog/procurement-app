@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { RefreshCw, Send, Check, Paperclip, Sparkles, ArrowLeft, Trash2 } from 'lucide-react';
+import { RefreshCw, Send, Check, Paperclip, Sparkles, ArrowLeft, Trash2, ExternalLink } from 'lucide-react';
 import { inbox, inputClass, buttonPrimary, buttonPlain, fmtDateTime, timeAgo } from './api';
 
 const CAT = {
@@ -10,6 +10,17 @@ const CAT = {
   fyi: ['FYI', 'bg-slate-100 text-slate-700'],
   done: ['Done', 'bg-emerald-100 text-emerald-800'],
 };
+// Opens a conversation in Gmail itself, in the connected account.
+const gmailLink = (email, threadId) => `https://mail.google.com/mail/u/${encodeURIComponent(email)}/#all/${threadId}`;
+
+// A typed supplier name either matches a Cin7 supplier (linked to it) or is a new custom supplier.
+const nameKey = (s) => String(s || '').trim().toLowerCase();
+const supplierPayload = (name, suppliers) => {
+  const hit = suppliers.find((x) => nameKey(x.name) === nameKey(name));
+  return hit ? { supplier_id: hit.id, label: '' } : { supplier_id: '', label: String(name || '').trim() };
+};
+const isCin7Supplier = (name, suppliers) => suppliers.some((x) => nameKey(x.name) === nameKey(name));
+
 const FILTERS = [['attention', 'Needs reply'], ['waiting', 'Waiting on them'], ['fyi', 'FYI'], ['done', 'Done'], ['', 'All']];
 
 const Pill = ({ cat }) => {
@@ -163,7 +174,7 @@ export default function Inbox() {
             </section>
             <section aria-label="Conversation" className={selectedId ? '' : 'hidden lg:block'}>
               {selectedId ? (
-                <ThreadView id={selectedId} onBack={() => setSelectedId(null)} onChanged={() => { loadThreads(); loadOverview(); }} setNotice={setNotice} />
+                <ThreadView id={selectedId} mailEmail={mail.email} onBack={() => setSelectedId(null)} onChanged={() => { loadThreads(); loadOverview(); }} setNotice={setNotice} />
               ) : (
                 <div className="rounded-xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">Pick a conversation.</div>
               )}
@@ -195,6 +206,7 @@ function TodayView({ overview, reload, onOpen, connected, mail, setNotice, unfil
           {t.priority === 'high' && <span className="font-semibold text-red-700">Urgent</span>}
           {t.source === 'manual' && <span className="text-slate-400">Added by you</span>}
           {t.thread_id && <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" onClick={() => onOpen(t.thread_id)}>Open email</button>}
+          {t.gmail_thread_id && mail.email && <a href={gmailLink(mail.email, t.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className="font-semibold text-blue-700 hover:underline">Open in Gmail</a>}
         </div>
       </div>
       <button type="button" aria-label="Remove" className="text-slate-300 hover:text-red-600 cursor-pointer" onClick={() => run(() => inbox('delete_todo', { id: t.id }))}><Trash2 size={14} /></button>
@@ -236,7 +248,7 @@ function TodayView({ overview, reload, onOpen, connected, mail, setNotice, unfil
 }
 
 // ----------------------------------------------------------------- thread
-function ThreadView({ id, onBack, onChanged, setNotice }) {
+function ThreadView({ id, mailEmail, onBack, onChanged, setNotice }) {
   const [data, setData] = useState(null);
   const [draft, setDraft] = useState(null);
   const [instructions, setInstructions] = useState('');
@@ -287,8 +299,12 @@ function ThreadView({ id, onBack, onChanged, setNotice }) {
             <span>{thread.supplier_name || thread.group_label || 'Unmatched sender'}</span>
             <span>{thread.message_count} messages</span>
           </div>
+          <div className="mt-1 text-xs text-slate-500">Replied in Gmail instead? It shows here after the next check.</div>
         </div>
         <div className="flex shrink-0 gap-1.5">
+          {thread.gmail_thread_id && mailEmail && (
+            <a href={gmailLink(mailEmail, thread.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className={`${buttonPlain} no-underline`}><ExternalLink size={14} />Open in Gmail</a>
+          )}
           {thread.category !== 'done'
             ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('done')}><Check size={14} />Done</button>
             : <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('needs_reply')}>Reopen</button>}
@@ -383,7 +399,7 @@ function ThreadView({ id, onBack, onChanged, setNotice }) {
 function AssignForm({ thread, messages, people, setPeople, busy, onSave }) {
   const sender = [...messages].reverse().find((m) => !m.is_from_us)?.from_addr || '';
   const [kind, setKind] = useState('supplier');
-  const [supplierId, setSupplierId] = useState('');
+  const [name, setName] = useState('');
   const [label, setLabel] = useState('');
   const [scope, setScope] = useState('email');
   useEffect(() => { if (!people) inbox('list_contacts').then(setPeople).catch(() => {}); }, [people, setPeople]);
@@ -395,10 +411,11 @@ function AssignForm({ thread, messages, people, setPeople, busy, onSave }) {
         <label className="flex items-center gap-1.5"><input type="radio" checked={kind === 'forwarder'} onChange={() => setKind('forwarder')} />Forwarder</label>
       </div>
       {kind === 'supplier' ? (
-        <select className={inputClass} value={supplierId} onChange={(e) => setSupplierId(e.target.value)} aria-label="Supplier">
-          <option value="">Choose the supplier</option>
-          {(people?.suppliers || []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
+        <div>
+          <input className={inputClass} list="assign-supplier-names" value={name} onChange={(e) => setName(e.target.value)} placeholder="Pick a supplier, or type a new name" aria-label="Supplier" />
+          <datalist id="assign-supplier-names">{(people?.suppliers || []).map((s) => <option key={s.id} value={s.name} />)}</datalist>
+          {name.trim() && <p className="mt-1 text-xs text-slate-600">{isCin7Supplier(name, people?.suppliers || []) ? 'Linked to the Cin7 supplier.' : 'Not in Cin7. It will be saved as a custom supplier.'}</p>}
+        </div>
       ) : (
         <input className={inputClass} value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Forwarder name" aria-label="Forwarder name" />
       )}
@@ -406,8 +423,8 @@ function AssignForm({ thread, messages, people, setPeople, busy, onSave }) {
         <label className="flex items-center gap-1.5"><input type="radio" checked={scope === 'email'} onChange={() => setScope('email')} />Just {sender}</label>
         <label className="flex items-center gap-1.5"><input type="radio" checked={scope === 'domain'} onChange={() => setScope('domain')} />Everyone at {domain}</label>
       </div>
-      <button type="button" className={buttonPrimary} disabled={busy || !sender || (kind === 'supplier' ? !supplierId : !label.trim())}
-        onClick={() => onSave({ kind, supplier_id: supplierId, label, email: scope === 'email' ? sender : '', domain: scope === 'domain' ? domain : '' })}>Save</button>
+      <button type="button" className={buttonPrimary} disabled={busy || !sender || (kind === 'supplier' ? !name.trim() : !label.trim())}
+        onClick={() => onSave({ kind, ...(kind === 'supplier' ? supplierPayload(name, people?.suppliers || []) : { label }), email: scope === 'email' ? sender : '', domain: scope === 'domain' ? domain : '' })}>Save</button>
     </div>
   );
 }
@@ -441,7 +458,7 @@ function SettingsView({ mail, reloadStatus, onChanged, autoFind, onFindStarted }
   const [data, setData] = useState(null);
   const [sig, setSig] = useState(mail.settings?.signature || '');
   const [auto, setAuto] = useState(mail.settings?.auto_draft !== false);
-  const [form, setForm] = useState({ kind: 'supplier', supplier_id: '', label: '', email: '', domain: '' });
+  const [form, setForm] = useState({ kind: 'supplier', name: '', email: '', domain: '' });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
@@ -479,24 +496,26 @@ function SettingsView({ mail, reloadStatus, onChanged, autoFind, onFindStarted }
           <label className="text-xs font-semibold text-slate-600">Type
             <select className={inputClass} value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}><option value="supplier">Supplier</option><option value="forwarder">Forwarder</option></select>
           </label>
-          {form.kind === 'supplier' ? (
-            <label className="text-xs font-semibold text-slate-600">Supplier
-              <select className={inputClass} value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}><option value="">Choose</option>{data.suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
-            </label>
-          ) : (
-            <label className="text-xs font-semibold text-slate-600">Forwarder name<input className={inputClass} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} /></label>
-          )}
+          <label className="text-xs font-semibold text-slate-600">{form.kind === 'supplier' ? 'Supplier name' : 'Forwarder name'}
+            <input className={inputClass} list={form.kind === 'supplier' ? 'settings-supplier-names' : 'settings-forwarder-names'} value={form.name}
+              placeholder={form.kind === 'supplier' ? 'Pick one, or type a new name' : 'e.g. the forwarder\'s company'} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </label>
           <label className="text-xs font-semibold text-slate-600">Email address<input className={inputClass} value={form.email} placeholder="name@company.com" onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
           <label className="text-xs font-semibold text-slate-600">or whole domain<input className={inputClass} value={form.domain} placeholder="company.com" onChange={(e) => setForm({ ...form, domain: e.target.value })} /></label>
-          <button type="button" className={buttonPrimary} disabled={busy} onClick={() => run(async () => { const r = await inbox('save_contact', form); setForm({ ...form, email: '', domain: '' }); return r; }, (r) => `Saved. ${r.refiled} conversation(s) re-filed.`)}>Add</button>
+          <button type="button" className={buttonPrimary} disabled={busy} onClick={() => run(async () => { const r = await inbox('save_contact', { kind: form.kind, ...(form.kind === 'supplier' ? supplierPayload(form.name, data.suppliers) : { label: form.name }), email: form.email, domain: form.domain }); setForm({ ...form, email: '', domain: '' }); return r; }, (r) => `Saved. ${r.refiled} conversation(s) re-filed.`)}>Add</button>
         </div>
+        <datalist id="settings-supplier-names">{data.suppliers.map((x) => <option key={x.id} value={x.name} />)}</datalist>
+        <datalist id="settings-forwarder-names">{[...new Set(data.contacts.filter((c) => c.kind === 'forwarder' && c.label).map((c) => c.label))].map((x) => <option key={x} value={x} />)}</datalist>
+        {form.kind === 'supplier' && form.name.trim() && (
+          <p className="text-xs text-slate-600">{isCin7Supplier(form.name, data.suppliers) ? 'Linked to the Cin7 supplier. Drafts can mention its open purchase orders.' : 'Not in Cin7. It will be saved as a custom supplier, with no purchase orders attached.'}</p>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs text-slate-500"><th className="py-1 font-semibold">Belongs to</th><th className="py-1 font-semibold">Address</th><th /></tr></thead>
             <tbody className="divide-y divide-slate-100">
               {data.contacts.map((c) => (
                 <tr key={c.id}>
-                  <td className="py-1.5">{c.kind === 'forwarder' ? <>{c.label} <span className="text-xs text-slate-400">forwarder</span></> : nameOfSupplier.get(c.supplier_id) || 'Supplier'}</td>
+                  <td className="py-1.5">{c.kind === 'forwarder' ? <>{c.label} <span className="text-xs text-slate-400">forwarder</span></> : c.supplier_id ? nameOfSupplier.get(c.supplier_id) || 'Supplier' : <>{c.label} <span className="text-xs text-slate-400">custom supplier</span></>}</td>
                   <td className="py-1.5">{c.email || `everyone at ${c.domain}`}</td>
                   <td className="py-1.5 text-right"><button type="button" className="text-slate-400 hover:text-red-600 cursor-pointer" aria-label="Remove" disabled={busy} onClick={() => run(() => inbox('delete_contact', { id: c.id }), (r) => `Removed. ${r.refiled} conversation(s) re-filed.`)}><Trash2 size={14} /></button></td>
                 </tr>
@@ -529,7 +548,6 @@ function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone,
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null);
   const [busy, setBusy] = useState(false);
-  const supByName = useMemo(() => new Map(suppliers.map((x) => [x.name.trim().toLowerCase(), x])), [suppliers]);
 
   const find = useCallback(async () => {
     setState('working');
@@ -549,10 +567,10 @@ function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone,
 
   const update = (key, patch) => setRows((list) => list.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const toItem = (r) => {
-    const sup = r.pick === 'supplier' ? supByName.get(r.supplierName.trim().toLowerCase()) : null;
-    if (r.pick === 'supplier' && !sup) return { error: 'Pick a supplier from the list.' };
+    if (r.pick === 'supplier' && !r.supplierName.trim()) return { error: 'Type or pick a supplier name.' };
     if (r.pick === 'forwarder' && !r.label.trim()) return { error: 'Enter the forwarder name.' };
-    return { item: { kind: r.pick, supplier_id: sup?.id || '', label: r.label, email: r.scope === 'email' ? r.email : '', domain: r.scope === 'domain' ? r.domain : '' } };
+    const who = r.pick === 'supplier' ? supplierPayload(r.supplierName, suppliers) : { supplier_id: '', label: r.label };
+    return { item: { kind: r.pick, ...who, email: r.scope === 'email' ? r.email : '', domain: r.scope === 'domain' ? r.domain : '' } };
   };
 
   const accept = async (list) => {
@@ -626,7 +644,8 @@ function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone,
                   </label>
                   {r.pick === 'supplier' ? (
                     <label className="w-56 text-xs font-semibold text-slate-600">Supplier
-                      <input className={selectCls} list="supplier-names" value={r.supplierName} placeholder="Start typing a name" onChange={(e) => update(r.key, { supplierName: e.target.value })} />
+                      <input className={selectCls} list="supplier-names" value={r.supplierName} placeholder="Pick one, or type a new name" onChange={(e) => update(r.key, { supplierName: e.target.value })} />
+                      {r.supplierName.trim() && !isCin7Supplier(r.supplierName, suppliers) && <span className="mt-1 block text-[0.7rem] font-normal text-slate-500">Not in Cin7: saved as a custom supplier</span>}
                     </label>
                   ) : (
                     <label className="w-56 text-xs font-semibold text-slate-600">Forwarder name
