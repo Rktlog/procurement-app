@@ -47,6 +47,7 @@ export default function Inbox() {
   const [selectedId, setSelectedId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [autoFind, setAutoFind] = useState(false);
+  const [freightFocus, setFreightFocus] = useState('');
   const [progress, setProgress] = useState('');
   const [notice, setNotice] = useState(
     params.get('gmail') ? { type: 'success', text: 'Gmail is connected.' }
@@ -60,7 +61,7 @@ export default function Inbox() {
     try { setOverview(await inbox('inbox_overview')); } catch (err) { setNotice({ type: 'error', text: err.message }); }
   }, []);
   const loadThreads = useCallback(async () => {
-    if (['today', 'settings'].includes(view)) return;
+    if (['today', 'settings', 'freight'].includes(view)) return;
     try { setThreads((await inbox('list_threads', { group: view, category: filter })).threads); }
     catch (err) { setNotice({ type: 'error', text: err.message }); }
   }, [view, filter]);
@@ -99,6 +100,7 @@ export default function Inbox() {
   const totalNeeds = groups.reduce((n, g) => (g.kind === 'unmatched' ? n : n + g.needs), 0);
 
   const pick = (v) => { setView(v); setSelectedId(null); };
+  const openFreight = (po) => { setFreightFocus(po || ''); setView('freight'); setSelectedId(null); };
   const findSuppliers = () => { setAutoFind(true); setView('settings'); setSelectedId(null); };
   const navBtn = (key, label, count, extra) => (
     <button key={key} type="button" onClick={() => pick(key)}
@@ -128,6 +130,7 @@ export default function Inbox() {
         <nav aria-label="Suppliers" className={`rounded-xl border border-slate-200 bg-white p-2 space-y-0.5 ${selectedId ? 'hidden lg:block' : ''}`}>
           {navBtn('today', 'Today', 0, overview?.drafts_waiting ? `${overview.drafts_waiting} drafts` : '')}
           {navBtn('all', 'All mail', totalNeeds)}
+          {navBtn('freight', 'Freight quotes', 0, overview?.freight_open ? `${overview.freight_open} open` : '')}
           {sup.length > 0 && <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Suppliers</div>}
           {sup.map((g) => navBtn(g.key, g.label, g.needs, g.waiting ? `${g.waiting} waiting` : ''))}
           {fwd.length > 0 && <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Forwarders</div>}
@@ -138,7 +141,10 @@ export default function Inbox() {
         </nav>
 
         {/* ----------------------------------------------- middle and right */}
-        {view === 'settings' ? (
+        {view === 'freight' ? (
+          <div className="lg:col-span-2"><FreightView mailEmail={mail.email} focus={freightFocus} setNotice={setNotice} onChanged={loadOverview}
+            onOpenThread={(tid) => { setView('all'); setFilter(''); setSelectedId(tid); }} /></div>
+        ) : view === 'settings' ? (
           <div className="lg:col-span-2"><SettingsView mail={mail} reloadStatus={loadStatus} onChanged={refreshAll} autoFind={autoFind} onFindStarted={() => setAutoFind(false)} /></div>
         ) : view === 'today' ? (
           <div className="lg:col-span-2"><TodayView overview={overview} reload={loadOverview} onOpen={(id) => { setView('all'); setFilter(''); setSelectedId(id); }} connected={mail.connected} mail={mail} setNotice={setNotice} unfiled={unmatched?.total || 0} onFind={findSuppliers} /></div>
@@ -164,6 +170,7 @@ export default function Inbox() {
                         <Pill cat={t.category} />
                         {t.urgency === 'high' && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[0.7rem] font-semibold text-red-800">Urgent</span>}
                         {t.has_draft && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[0.7rem] font-semibold text-violet-800">Draft ready</span>}
+                        {t.freight_detected && <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[0.7rem] font-semibold text-sky-800">Freight details</span>}
                         {t.has_attachments && <Paperclip size={12} className="text-slate-400" aria-label="Has attachments" />}
                       </div>
                     </button>
@@ -174,7 +181,7 @@ export default function Inbox() {
             </section>
             <section aria-label="Conversation" className={selectedId ? '' : 'hidden lg:block'}>
               {selectedId ? (
-                <ThreadView id={selectedId} mailEmail={mail.email} onBack={() => setSelectedId(null)} onChanged={() => { loadThreads(); loadOverview(); }} setNotice={setNotice} />
+                <ThreadView id={selectedId} mailEmail={mail.email} onFreight={openFreight} onBack={() => setSelectedId(null)} onChanged={() => { loadThreads(); loadOverview(); }} setNotice={setNotice} />
               ) : (
                 <div className="rounded-xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">Pick a conversation.</div>
               )}
@@ -248,7 +255,7 @@ function TodayView({ overview, reload, onOpen, connected, mail, setNotice, unfil
 }
 
 // ----------------------------------------------------------------- thread
-function ThreadView({ id, mailEmail, onBack, onChanged, setNotice }) {
+function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) {
   const [data, setData] = useState(null);
   const [draft, setDraft] = useState(null);
   const [instructions, setInstructions] = useState('');
@@ -286,6 +293,14 @@ function ThreadView({ id, mailEmail, onBack, onChanged, setNotice }) {
     if (r) { setDraft(null); await load(); onChanged(); }
   };
   const discard = async () => { const r = await run(() => inbox('discard_draft', { id: draft.id }), 'Draft discarded.'); if (r) { setDraft(null); onChanged(); } };
+  const makeFreight = async () => {
+    const r = await run(() => inbox('freight_extract', { thread_id: thread.id }));
+    if (!r) return;
+    const added = [...r.created, ...r.updated];
+    setNotice({ type: 'success', text: `Added to Freight quotes: ${added.join(', ') || 'nothing new'}. Check every number against this email before sending.${r.skipped.length ? ` Skipped: ${r.skipped.join(', ')}.` : ''}` });
+    onChanged();
+    onFreight(r.first);
+  };
   const setCategory = async (category) => { const r = await run(() => inbox('set_thread_category', { id: thread.id, category })); if (r) { await load(); onChanged(); } };
 
   return (
@@ -298,6 +313,7 @@ function ThreadView({ id, mailEmail, onBack, onChanged, setNotice }) {
             <Pill cat={thread.category} />
             <span>{thread.supplier_name || thread.group_label || 'Unmatched sender'}</span>
             <span>{thread.message_count} messages</span>
+            {thread.freight_detected && <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[0.7rem] font-semibold text-sky-800">Freight details found</span>}
           </div>
           <div className="mt-1 text-xs text-slate-500">Replied in Gmail instead? It shows here after the next check.</div>
         </div>
@@ -305,6 +321,7 @@ function ThreadView({ id, mailEmail, onBack, onChanged, setNotice }) {
           {thread.gmail_thread_id && mailEmail && (
             <a href={gmailLink(mailEmail, thread.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className={`${buttonPlain} no-underline`}><ExternalLink size={14} />Open in Gmail</a>
           )}
+          {known && <button type="button" className={buttonPlain} disabled={busy} onClick={makeFreight}>{busy ? 'Reading' : 'Freight quote from this email'}</button>}
           {thread.category !== 'done'
             ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('done')}><Check size={14} />Done</button>
             : <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('needs_reply')}>Reopen</button>}
@@ -672,5 +689,281 @@ function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone,
         </>
       )}
     </div>
+  );
+}
+
+// --------------------------------------------------------- freight quotes
+const money = (price, cur) => `${cur ? `${cur} ` : ''}${Number(price).toLocaleString('en-AU', { maximumFractionDigits: 2 })}`;
+const QSTATUS = {
+  drafted: ['Draft', 'bg-slate-100 text-slate-700'], sent: ['Waiting for reply', 'bg-blue-100 text-blue-800'], quoted: ['Quote in', 'bg-emerald-100 text-emerald-800'],
+  declined: ['Declined', 'bg-red-100 text-red-800'], question: ['Needs a look', 'bg-amber-100 text-amber-800'],
+};
+const toForm = (r) => ({
+  mode: r.mode || '', weight_unit: r.weight_unit || '', dim_unit: r.dim_unit || '', pickup: r.pickup || '', deliver_to: r.deliver_to || '', ready_date: r.ready_date || '', notes: r.notes || '',
+  skids: (r.skids || []).map((k) => ({ label: k.label || '', contents: k.contents || '', weight: k.weight ?? '', h: k.h ?? '', l: k.l ?? '', w: k.w ?? '' })),
+});
+const smallInput = `${inputClass} !min-h-[2.25rem] !px-2`;
+
+function FreightView({ mailEmail, focus, onOpenThread, setNotice, onChanged }) {
+  const [data, setData] = useState(null);
+  const [po, setPo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try { setData(await inbox('freight_list')); onChanged?.(); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+  }, [setNotice, onChanged]);
+  useEffect(() => { load(); }, [load]);
+
+  const addByHand = async () => {
+    setBusy(true);
+    setNotice(null);
+    try { await inbox('freight_create', { po_number: po }); setPo(''); await load(); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    setBusy(false);
+  };
+  if (!data) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
+
+  return (
+    <div className="space-y-3 max-w-5xl">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+        <h2 className="text-base font-bold text-ink">Freight quotes</h2>
+        <p className="text-sm text-slate-600">When a supplier sends PO details with skid weights and sizes, open that email and press <b>Freight quote from this email</b>. Each PO appears here as a heading. Check the dims, send them to your forwarders, and their prices fill in as the replies arrive.</p>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <input className={`${inputClass} !w-56`} value={po} onChange={(e) => setPo(e.target.value)} placeholder="Add a PO by hand, e.g. P23-3276" aria-label="PO number" onKeyDown={(e) => { if (e.key === 'Enter' && po.trim()) addByHand(); }} />
+          <button type="button" className={buttonPlain} disabled={busy || !po.trim()} onClick={addByHand}>Add PO</button>
+        </div>
+      </div>
+      {data.requests.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">No POs yet.</div>}
+      {data.requests.map((r) => (
+        <PoCard key={r.id} req={r} quotes={data.quotes.filter((q) => q.request_id === r.id)} forwarders={data.forwarders} mailEmail={mailEmail}
+          defaultOpen={r.po_number === focus} reload={load} setNotice={setNotice} onOpenThread={onOpenThread} />
+      ))}
+    </div>
+  );
+}
+
+function PoCard({ req, quotes, forwarders, mailEmail, defaultOpen, reload, setNotice, onOpenThread }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [f, setF] = useState(() => toForm(req));
+  const [busy, setBusy] = useState(false);
+  const [picks, setPicks] = useState(() => Object.fromEntries(forwarders.map((x) => [x.label, { on: true, to: x.emails[0] || '', cc: x.emails.slice(1).join(', ') }])));
+  useEffect(() => { setF(toForm(req)); }, [req.updated_at]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const call = async (fn, ok) => {
+    setBusy(true);
+    setNotice(null);
+    try { const r = await fn(); if (ok) setNotice({ type: 'success', text: typeof ok === 'function' ? ok(r) : ok }); await reload(); return r; }
+    catch (err) { setNotice({ type: 'error', text: err.message }); }
+    finally { setBusy(false); }
+  };
+  const save = (confirmed) => call(() => inbox('freight_save', { id: req.id, ...f, confirmed }), confirmed ? 'Dims marked as checked.' : 'Saved. The dims need checking again before you send.');
+  const setSkid = (i, k, v) => setF((cur) => ({ ...cur, skids: cur.skids.map((s, n) => (n === i ? { ...s, [k]: v } : s)) }));
+
+  const drafts = quotes.filter((q) => q.status === 'drafted');
+  const asked = quotes.filter((q) => q.status !== 'drafted');
+  const priced = asked.filter((q) => q.price != null);
+  const allIn = asked.length > 0 && asked.every((q) => q.status === 'quoted' || q.status === 'declined');
+  const sameCur = priced.length > 1 && new Set(priced.map((q) => q.currency || '')).size === 1;
+  const lowest = sameCur ? Math.min(...priced.map((q) => Number(q.price))) : null;
+  const differentBasis = priced.length > 1 && new Set(priced.map((q) => (q.price_basis || '').toLowerCase())).size > 1;
+  const total = f.skids.reduce((n, s) => n + (Number(s.weight) || 0), 0);
+  const askedLabels = new Set(asked.map((q) => q.forwarder_label));
+  const chosen = forwarders.filter((x) => picks[x.label]?.on && !askedLabels.has(x.label));
+  const unitsMissing = !f.weight_unit || !f.dim_unit;
+
+  const prepare = () => call(() => inbox('freight_prepare', { request_id: req.id, forwarders: chosen.map((x) => ({ label: x.label, to: picks[x.label].to, cc: picks[x.label].cc })) }),
+    (r) => `Drafts ready for ${r.made.join(', ') || 'nobody'}. Read each one, then send.${r.skipped.length ? ` Skipped: ${r.skipped.join(', ')}.` : ''}`);
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white">
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex w-full flex-wrap items-center justify-between gap-2 p-4 text-left cursor-pointer">
+        <div className="min-w-0">
+          <h3 className="text-base font-bold text-ink">PO# {req.po_number}{req.mode ? ` (${req.mode})` : ''}</h3>
+          <div className="mt-0.5 text-xs text-slate-600">{req.supplier_label || 'Supplier'} · {f.skids.length} skid{f.skids.length === 1 ? '' : 's'}{total ? ` · ${total} ${f.weight_unit || ''}` : ''}</div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {req.dims_confirmed ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Dims checked</span> : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[0.7rem] font-semibold text-amber-800">Check the dims</span>}
+          {asked.length > 0 && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[0.7rem] font-semibold text-blue-800">{priced.length} of {asked.length} quotes in</span>}
+          {allIn && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">All quotes in</span>}
+          {lowest != null && <span className="text-xs font-semibold text-ink">Lowest {money(lowest, priced[0].currency)}</span>}
+        </div>
+      </button>
+
+      {open && (
+        <div className="space-y-5 border-t border-slate-100 p-4">
+          {/* 1. the dims */}
+          <div className="space-y-2">
+            <h4 className="text-sm font-bold text-ink">1. The dims</h4>
+            <p className="text-xs text-slate-600">Exactly as the supplier gave them. Check every number against their email before marking them checked.</p>
+            <div className="flex flex-wrap gap-3">
+              <label className="text-xs font-semibold text-slate-600">Mode
+                <select className={`${smallInput} mt-1 w-28`} value={f.mode} onChange={(e) => setF({ ...f, mode: e.target.value })}><option value="">Not stated</option><option value="sea">Sea</option><option value="air">Air</option><option value="road">Road</option></select></label>
+              <label className="text-xs font-semibold text-slate-600">Weight in
+                <select className={`${smallInput} mt-1 w-24`} value={f.weight_unit} onChange={(e) => setF({ ...f, weight_unit: e.target.value })}><option value="">Choose</option><option value="lb">lb</option><option value="kg">kg</option></select></label>
+              <label className="text-xs font-semibold text-slate-600">Sizes in
+                <select className={`${smallInput} mt-1 w-24`} value={f.dim_unit} onChange={(e) => setF({ ...f, dim_unit: e.target.value })}><option value="">Choose</option><option value="in">inches</option><option value="cm">cm</option></select></label>
+            </div>
+            {unitsMissing && <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">The units weren't clear in the email, so I haven't guessed. Choose them before sending.</p>}
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-sm">
+                <thead><tr className="text-left text-xs text-slate-500"><th className="py-1 pr-2 font-semibold">Skid</th><th className="py-1 pr-2 font-semibold">Contents</th><th className="py-1 pr-2 font-semibold">Weight {f.weight_unit && `(${f.weight_unit})`}</th><th className="py-1 pr-2 font-semibold">H</th><th className="py-1 pr-2 font-semibold">L</th><th className="py-1 pr-2 font-semibold">W {f.dim_unit && `(${f.dim_unit})`}</th><th /></tr></thead>
+                <tbody>
+                  {f.skids.map((s, i) => (
+                    <tr key={i}>
+                      <td className="py-1 pr-2"><input className={smallInput} value={s.label} aria-label={`Skid ${i + 1} name`} onChange={(e) => setSkid(i, 'label', e.target.value)} /></td>
+                      <td className="py-1 pr-2"><input className={smallInput} value={s.contents} aria-label={`Skid ${i + 1} contents`} placeholder="105 sheets" onChange={(e) => setSkid(i, 'contents', e.target.value)} /></td>
+                      {['weight', 'h', 'l', 'w'].map((k) => (
+                        <td key={k} className="py-1 pr-2"><input className={`${smallInput} w-20`} inputMode="decimal" value={s[k]} aria-label={`Skid ${i + 1} ${k === 'weight' ? 'weight' : k.toUpperCase()}`} onChange={(e) => setSkid(i, k, e.target.value)} /></td>
+                      ))}
+                      <td className="py-1"><button type="button" aria-label={`Remove skid ${i + 1}`} className="text-slate-400 hover:text-red-600 cursor-pointer" onClick={() => setF({ ...f, skids: f.skids.filter((_, n) => n !== i) })}><Trash2 size={14} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button type="button" className={buttonPlain} onClick={() => setF({ ...f, skids: [...f.skids, { label: '', contents: '', weight: '', h: '', l: '', w: '' }] })}>Add a skid</button>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <label className="text-xs font-semibold text-slate-600">Pick-up from<input className={`${smallInput} mt-1`} value={f.pickup} onChange={(e) => setF({ ...f, pickup: e.target.value })} placeholder="Optional" /></label>
+              <label className="text-xs font-semibold text-slate-600">Deliver to<input className={`${smallInput} mt-1`} value={f.deliver_to} onChange={(e) => setF({ ...f, deliver_to: e.target.value })} placeholder="Optional" /></label>
+              <label className="text-xs font-semibold text-slate-600">Ready date<input className={`${smallInput} mt-1`} value={f.ready_date} onChange={(e) => setF({ ...f, ready_date: e.target.value })} placeholder="Optional" /></label>
+            </div>
+            <label className="block text-xs font-semibold text-slate-600">Notes for the forwarder<input className={`${smallInput} mt-1`} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} placeholder="Optional" /></label>
+            {req.source_text && (
+              <details className="text-xs text-slate-600"><summary className="cursor-pointer font-semibold text-blue-700">What the supplier's email said</summary><pre className="mt-1 whitespace-pre-wrap rounded bg-slate-50 p-2 font-sans">{req.source_text}</pre></details>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className={buttonPrimary} disabled={busy} onClick={() => save(true)}><Check size={14} />Dims checked</button>
+              <button type="button" className={buttonPlain} disabled={busy} onClick={() => save(false)}>Save changes</button>
+              {req.source_thread_id && <button type="button" className={buttonPlain} onClick={() => onOpenThread(req.source_thread_id)}>Open the supplier's email</button>}
+              <button type="button" className="ml-auto text-xs font-semibold text-slate-500 hover:text-red-700 cursor-pointer" disabled={busy} onClick={() => window.confirm(`Close PO ${req.po_number}? It leaves this list.`) && call(() => inbox('freight_close', { id: req.id }), 'PO closed.')}>Close this PO</button>
+            </div>
+          </div>
+
+          {/* 2. ask the forwarders */}
+          <div className="space-y-2 border-t border-slate-100 pt-4">
+            <h4 className="text-sm font-bold text-ink">2. Ask your forwarders for a quote</h4>
+            {!req.dims_confirmed ? <p className="text-xs text-slate-600">Mark the dims as checked first. Saving any change asks for a fresh check.</p>
+              : forwarders.length === 0 ? <p className="text-xs text-slate-600">No forwarders are saved yet. Add them in Contacts and settings. Quote requests only go to saved forwarders.</p>
+              : (
+                <>
+                  <p className="text-xs text-slate-600">The same dims can go to several forwarders. Quote requests can only go to forwarders you've saved. Each one becomes a draft you read before sending.</p>
+                  <ul className="divide-y divide-slate-100">
+                    {forwarders.map((x) => {
+                      const pk = picks[x.label] || { on: false, to: '', cc: '' };
+                      const done = askedLabels.has(x.label);
+                      return (
+                        <li key={x.label} className="flex flex-wrap items-end gap-3 py-2">
+                          <label className="flex w-44 items-center gap-2 text-sm font-semibold"><input type="checkbox" className="h-4 w-4" disabled={done} checked={pk.on && !done} onChange={(e) => setPicks({ ...picks, [x.label]: { ...pk, on: e.target.checked } })} />{x.label}{done && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[0.7rem] font-semibold text-blue-800">Asked</span>}</label>
+                          <label className="text-xs font-semibold text-slate-600">To<input className={`${smallInput} mt-1 w-56`} disabled={done} value={pk.to} onChange={(e) => setPicks({ ...picks, [x.label]: { ...pk, to: e.target.value } })} /></label>
+                          <label className="text-xs font-semibold text-slate-600">Cc (key account manager)<input className={`${smallInput} mt-1 w-64`} disabled={done} value={pk.cc} onChange={(e) => setPicks({ ...picks, [x.label]: { ...pk, cc: e.target.value } })} /></label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <button type="button" className={buttonPrimary} disabled={busy || chosen.length === 0} onClick={prepare}><Sparkles size={14} />Create draft emails ({chosen.length})</button>
+                </>
+              )}
+            {drafts.map((q) => <QuoteDraft key={`${q.id}-${q.updated_at}`} q={q} reload={reload} setNotice={setNotice} />)}
+          </div>
+
+          {/* 3. the prices */}
+          {asked.length > 0 && (
+            <div className="space-y-2 border-t border-slate-100 pt-4">
+              <h4 className="text-sm font-bold text-ink">3. Quotes{allIn ? ' (all in)' : ''}</h4>
+              {priced.length > 1 && !sameCur && <p className="text-xs text-amber-900">These prices are in different currencies, or the currency wasn't stated. Don't compare them until that's clear.</p>}
+              {differentBasis && <p className="text-xs text-amber-900">The quotes don't cover the same things (see the second column). Compare what's included, not just the total.</p>}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead><tr className="text-left text-xs text-slate-500"><th className="py-1 pr-2 font-semibold">Forwarder</th><th className="py-1 pr-2 font-semibold">Price</th><th className="py-1 pr-2 font-semibold">Covers</th><th className="py-1 pr-2 font-semibold">Transit</th><th className="py-1 pr-2 font-semibold">Valid until</th><th /></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {asked.map((q) => <QuoteRow key={`${q.id}-${q.updated_at}`} q={q} lowest={lowest} mailEmail={mailEmail} reload={reload} setNotice={setNotice} />)}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function QuoteDraft({ q, reload, setNotice }) {
+  const [d, setD] = useState({ to_email: q.to_email, cc_email: q.cc_email || '', subject: q.subject, body: q.body });
+  const [busy, setBusy] = useState(false);
+  const run = async (fn, ok) => {
+    setBusy(true);
+    setNotice(null);
+    try { await fn(); if (ok) setNotice({ type: 'success', text: ok }); await reload(); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    setBusy(false);
+  };
+  return (
+    <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-center justify-between"><h5 className="text-sm font-bold text-ink">Draft to {q.forwarder_label}</h5><span className="text-xs text-slate-500">Not sent until you click Send</span></div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="text-xs font-semibold text-slate-600">To<input className={`${smallInput} mt-1`} value={d.to_email} onChange={(e) => setD({ ...d, to_email: e.target.value })} /></label>
+        <label className="text-xs font-semibold text-slate-600">Cc<input className={`${smallInput} mt-1`} value={d.cc_email} onChange={(e) => setD({ ...d, cc_email: e.target.value })} /></label>
+      </div>
+      <label className="block text-xs font-semibold text-slate-600">Subject<input className={`${smallInput} mt-1`} value={d.subject} onChange={(e) => setD({ ...d, subject: e.target.value })} /></label>
+      <textarea aria-label={`Email to ${q.forwarder_label}`} className="min-h-[16rem] w-full rounded-md border border-slate-300 bg-white p-2.5 text-sm" value={d.body} onChange={(e) => setD({ ...d, body: e.target.value })} />
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={buttonPrimary} disabled={busy} onClick={() => window.confirm(`Send this quote request to ${d.to_email}${d.cc_email ? ` (cc ${d.cc_email})` : ''}?`) && run(() => inbox('freight_quote_send', { id: q.id, ...d }), `Sent to ${q.forwarder_label}. Their price fills in when they reply.`)}><Send size={14} />Send</button>
+        <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(() => inbox('freight_quote_save', { id: q.id, ...d }), 'Draft saved.')}>Save changes</button>
+        <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(() => inbox('freight_quote_discard', { id: q.id }), 'Draft discarded.')}>Discard</button>
+      </div>
+    </div>
+  );
+}
+
+function QuoteRow({ q, lowest, mailEmail, reload, setNotice }) {
+  const [edit, setEdit] = useState(false);
+  const [v, setV] = useState({ price: q.price ?? '', currency: q.currency || '', price_basis: q.price_basis || '', includes: q.includes || '', transit_days: q.transit_days ?? '', valid_until: q.valid_until || '' });
+  const [busy, setBusy] = useState(false);
+  const [label, tone] = QSTATUS[q.status] || QSTATUS.sent;
+  const run = async (payload, ok) => {
+    setBusy(true);
+    setNotice(null);
+    try { await inbox('freight_quote_update', { id: q.id, ...payload }); setNotice({ type: 'success', text: ok }); setEdit(false); await reload(); }
+    catch (err) { setNotice({ type: 'error', text: err.message }); }
+    setBusy(false);
+  };
+  const confirmPrice = () => run({ price: q.price, currency: q.currency || '', price_basis: q.price_basis || '', includes: q.includes || '', excludes: q.excludes || '', transit_days: q.transit_days ?? '', valid_until: q.valid_until || '' }, 'Price confirmed.');
+  const isLowest = lowest != null && q.price != null && Number(q.price) === lowest;
+  return (
+    <>
+      <tr className="align-top">
+        <td className="py-2 pr-2"><div className="font-semibold">{q.forwarder_label}</div><span className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-[0.7rem] font-semibold ${tone}`}>{label}</span></td>
+        <td className="py-2 pr-2">
+          {q.price != null ? (
+            <>
+              <div className="font-bold text-ink">{money(q.price, q.currency)}{!q.currency && <span className="ml-1 text-xs font-normal text-amber-800">currency?</span>} {isLowest && <span className="ml-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Lowest</span>}</div>
+              {q.price_verified ? <span className="text-xs text-emerald-800">Confirmed by you</span> : <span className="text-xs text-amber-800">From their email. Check it.</span>}
+              {q.price_text && <div className="mt-0.5 max-w-[16rem] text-xs text-slate-500">They wrote: "{q.price_text}"</div>}
+            </>
+          ) : <span className="text-xs text-slate-500">{q.reply_summary || 'Waiting for their reply'}</span>}
+        </td>
+        <td className="py-2 pr-2 text-xs text-slate-700">{q.price_basis || ''}{q.includes ? <div className="text-slate-500">Includes: {q.includes}</div> : null}{q.excludes ? <div className="text-slate-500">Excludes: {q.excludes}</div> : null}</td>
+        <td className="py-2 pr-2 text-xs">{q.transit_days != null ? `${q.transit_days} days` : ''}</td>
+        <td className="py-2 pr-2 text-xs">{q.valid_until || ''}</td>
+        <td className="py-2 text-right">
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {q.price != null && !q.price_verified && <button type="button" className={buttonPrimary} disabled={busy} onClick={confirmPrice}>Confirm</button>}
+            <button type="button" className={buttonPlain} disabled={busy} onClick={() => setEdit(!edit)}>{q.price != null ? 'Edit' : 'Enter price'}</button>
+            {q.gmail_thread_id && mailEmail && <a href={gmailLink(mailEmail, q.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className={`${buttonPlain} no-underline`} aria-label={`Open ${q.forwarder_label} email in Gmail`}><ExternalLink size={14} /></a>}
+          </div>
+        </td>
+      </tr>
+      {edit && (
+        <tr><td colSpan={6} className="pb-3">
+          <div className="grid gap-2 rounded-lg bg-slate-50 p-3 sm:grid-cols-3 lg:grid-cols-6">
+            <label className="text-xs font-semibold text-slate-600">Price<input className={`${smallInput} mt-1`} inputMode="decimal" value={v.price} onChange={(e) => setV({ ...v, price: e.target.value })} /></label>
+            <label className="text-xs font-semibold text-slate-600">Currency<input className={`${smallInput} mt-1`} maxLength={3} placeholder="AUD" value={v.currency} onChange={(e) => setV({ ...v, currency: e.target.value })} /></label>
+            <label className="text-xs font-semibold text-slate-600">Covers<input className={`${smallInput} mt-1`} placeholder="door to door" value={v.price_basis} onChange={(e) => setV({ ...v, price_basis: e.target.value })} /></label>
+            <label className="text-xs font-semibold text-slate-600">Includes<input className={`${smallInput} mt-1`} value={v.includes} onChange={(e) => setV({ ...v, includes: e.target.value })} /></label>
+            <label className="text-xs font-semibold text-slate-600">Transit days<input className={`${smallInput} mt-1`} inputMode="numeric" value={v.transit_days} onChange={(e) => setV({ ...v, transit_days: e.target.value })} /></label>
+            <label className="text-xs font-semibold text-slate-600">Valid until<input className={`${smallInput} mt-1`} placeholder="YYYY-MM-DD" value={v.valid_until} onChange={(e) => setV({ ...v, valid_until: e.target.value })} /></label>
+            <div className="sm:col-span-3 lg:col-span-6"><button type="button" className={buttonPrimary} disabled={busy} onClick={() => run(v, 'Price saved.')}>Save price</button></div>
+          </div>
+        </td></tr>
+      )}
+    </>
   );
 }
