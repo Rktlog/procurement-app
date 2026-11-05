@@ -104,6 +104,8 @@ function CollapsibleProductCard({ product, planningMonths }) {
   const [isOpen, setIsOpen] = useState(false);
   const [leadTimeMonths, setLeadTimeMonths] = useState(null);
   const [leadTimeSupplier, setLeadTimeSupplier] = useState(null);
+  // POs that still have stock coming, from the incoming breakdown. null = not loaded or unavailable, so the old display is used.
+  const [incoming, setIncoming] = useState(null);
 
   const recentPurchases = product.recent_purchases || [];
   const recentSales = product.recent_sales || [];
@@ -176,6 +178,22 @@ function CollapsibleProductCard({ product, planningMonths }) {
   const activePoNumbers = [
     ...new Set(recentPurchases.map((po) => po.po_number || po.number).filter(Boolean))
   ];
+  // Once the incoming breakdown has loaded, only POs with stock still coming are shown as active.
+  const chipPoNumbers = incoming ? incoming.live : activePoNumbers;
+  const activeSet = incoming ? new Set(incoming.all) : null;
+  const pastPurchases = activeSet ? recentPurchases.filter((po) => !activeSet.has(po.po_number || po.number)) : recentPurchases;
+  const poCard = (po, idx) => (
+    <div key={idx} className="p-2.5 bg-white rounded-xl border border-slate-200/80 flex justify-between items-center shadow-2xs">
+      <div>
+        <p className="font-semibold text-slate-800">PO #{po.po_number || 'N/A'}</p>
+        <p className="text-slate-500 text-[11px] font-medium">{po.supplier_name || 'Vendor'}</p>
+      </div>
+      <div className="text-right">
+        <p className="font-bold text-blue-600">+{po.quantity || po.qty || 0} {unitLabel}</p>
+        <p className="text-slate-400 text-[11px]">{po.order_date ? new Date(po.order_date).toLocaleDateString() : 'N/A'}</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="bg-white rounded-2xl shadow-2xs border border-slate-200/80 overflow-hidden transition-all hover:border-slate-300">
@@ -235,11 +253,11 @@ function CollapsibleProductCard({ product, planningMonths }) {
                 <span className="text-xs font-medium">On Order</span>
                 <p className="text-base font-bold mt-0.5">{product.on_order} {unitLabel}</p>
               </div>
-              {onOrderNum > 0 && activePoNumbers.length > 0 && (
+              {onOrderNum > 0 && chipPoNumbers.length > 0 && (
                 <div className="mt-2 pt-1.5 border-t border-blue-200/60 text-[11px]">
                   <span className="font-semibold block text-[10px] uppercase tracking-wider text-blue-600 mb-0.5">PO Ref:</span>
                   <div className="flex flex-wrap justify-center gap-1">
-                    {activePoNumbers.map((poNum, i) => (
+                    {chipPoNumbers.map((poNum, i) => (
                       <span key={i} className="bg-white border border-blue-200 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] text-blue-800">
                         #{poNum}
                       </span>
@@ -321,22 +339,21 @@ function CollapsibleProductCard({ product, planningMonths }) {
             </div>
 
             <div className="pt-4 md:pt-0 md:pl-4">
-              <IncomingBreakdown sku={product.sku} onOrder={onOrderNum} />
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Recent Purchase Orders</h4>
-              <div className="space-y-2 text-xs">
-                {recentPurchases.map((po, idx) => (
-                  <div key={idx} className="p-2.5 bg-white rounded-xl border border-slate-200/80 flex justify-between items-center shadow-2xs">
-                    <div>
-                      <p className="font-semibold text-slate-800">PO #{po.po_number || 'N/A'}</p>
-                      <p className="text-slate-500 text-[11px] font-medium">{po.supplier_name || 'Vendor'}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-bold text-blue-600">+{po.quantity || po.qty || 0} {unitLabel}</p>
-                      <p className="text-slate-400 text-[11px]">{po.order_date ? new Date(po.order_date).toLocaleDateString() : 'N/A'}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <IncomingBreakdown sku={product.sku} onOrder={onOrderNum} onLoaded={setIncoming} />
+              {incoming ? (
+                // Open POs are in the Incoming section above. Orders already received or closed are kept, but folded away.
+                pastPurchases.length > 0 && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-slate-500">Past purchase orders ({pastPurchases.length})</summary>
+                    <div className="space-y-2 text-xs mt-3">{pastPurchases.map(poCard)}</div>
+                  </details>
+                )
+              ) : (
+                <>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Recent Purchase Orders</h4>
+                  <div className="space-y-2 text-xs">{recentPurchases.map(poCard)}</div>
+                </>
+              )}
             </div>
           </div>
 

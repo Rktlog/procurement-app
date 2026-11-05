@@ -32,7 +32,7 @@ function Line({ l, today }) {
   );
 }
 
-export default function IncomingBreakdown({ sku, onOrder }) {
+export default function IncomingBreakdown({ sku, onOrder, onLoaded }) {
   const [rows, setRows] = useState(null);
   const [failed, setFailed] = useState(false);
   const today = todayMelb();
@@ -43,12 +43,17 @@ export default function IncomingBreakdown({ sku, onOrder }) {
     setFailed(false);
     supabase.rpc('get_incoming_for_sku', { p_sku: String(sku || '').trim() }).then(({ data, error }) => {
       if (!live) return;
-      if (error) { setFailed(true); setRows([]); } else setRows(data || []);
+      if (error) { setFailed(true); setRows([]); onLoaded?.(null); return; }
+      const list = data || [];
+      setRows(list);
+      // Which POs still have stock coming: `all` includes stale ones, `live` leaves them out.
+      const isStale = (l) => l.due_date && daysBetween(todayMelb(), l.due_date) > STALE_DAYS;
+      onLoaded?.({ all: [...new Set(list.map((l) => l.po_number))], live: [...new Set(list.filter((l) => !isStale(l)).map((l) => l.po_number))] });
     });
     return () => { live = false; };
-  }, [sku]);
+  }, [sku]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { groups, stale, total } = useMemo(() => {
+  const { groups, stale, staleTotal, freshTotal } = useMemo(() => {
     const list = rows || [];
     const fresh = list.filter((l) => !(l.due_date && daysBetween(today, l.due_date) > STALE_DAYS));
     const old = list.filter((l) => l.due_date && daysBetween(today, l.due_date) > STALE_DAYS);
@@ -59,17 +64,21 @@ export default function IncomingBreakdown({ sku, onOrder }) {
       if ((l.due_date || '9999') < g.first) g.first = l.due_date || '9999';
       byPo.set(l.po_number, g);
     }
-    return { groups: [...byPo.values()].sort((a, b) => a.first.localeCompare(b.first)), stale: old, total: list.reduce((n, l) => n + Number(l.qty), 0) };
+    return {
+      groups: [...byPo.values()].sort((a, b) => a.first.localeCompare(b.first)), stale: old,
+      staleTotal: old.reduce((n, l) => n + Number(l.qty), 0), freshTotal: fresh.reduce((n, l) => n + Number(l.qty), 0),
+    };
   }, [rows, today]);
 
   if (rows === null) return null;
   const onOrderNum = Number(onOrder) || 0;
   if (rows.length === 0 && onOrderNum <= 0) return null;
-  const unscheduled = Math.round((onOrderNum - total) * 100) / 100;
+  // Compared with DEAR's On Order using the live lines only. Stale lines are shown separately.
+  const unscheduled = Math.round((onOrderNum - freshTotal) * 100) / 100;
 
   return (
     <div className="mb-4">
-      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Incoming{rows.length ? ` (${qtyText(total)})` : ''}</h4>
+      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Incoming{rows.length ? ` (${qtyText(freshTotal)})` : ''}</h4>
       {rows.length === 0 && (
         <p className="text-xs text-slate-500">{failed ? "Incoming detail isn't available yet." : `DEAR shows ${qtyText(onOrderNum)} on order, but no PO detail has been read for this product yet.`}</p>
       )}
@@ -83,7 +92,7 @@ export default function IncomingBreakdown({ sku, onOrder }) {
       </div>
       {stale.length > 0 && (
         <details className="mt-2 text-xs text-slate-600">
-          <summary className="cursor-pointer font-semibold text-slate-700">Stale: {stale.length} line{stale.length === 1 ? '' : 's'} more than {STALE_DAYS} days late ({qtyText(stale.reduce((n, l) => n + Number(l.qty), 0))})</summary>
+          <summary className="cursor-pointer font-semibold text-slate-700">Stale: {stale.length} line{stale.length === 1 ? '' : 's'} more than {STALE_DAYS} days late ({qtyText(staleTotal)})</summary>
           <div className="mt-1.5 space-y-2">
             {[...new Set(stale.map((l) => l.po_number))].map((po) => (
               <div key={po} className="rounded-xl border border-slate-200 bg-white p-2.5">
@@ -94,8 +103,9 @@ export default function IncomingBreakdown({ sku, onOrder }) {
           </div>
         </details>
       )}
+      {rows.length > 0 && Math.abs(unscheduled) <= 0.5 && stale.length > 0 && <p className="mt-2 text-xs text-slate-600">DEAR's On Order of {qtyText(onOrderNum)} matches the lines above. It isn't counting the stale {stale.length === 1 ? 'line' : 'lines'}, so check {stale.length === 1 ? 'that PO' : 'those POs'} in DEAR.</p>}
       {rows.length > 0 && unscheduled > 0.5 && <p className="mt-2 text-xs text-slate-600">Not scheduled: {qtyText(unscheduled)}. DEAR counts this as on order, but it isn't on a PO line here.</p>}
-      {rows.length > 0 && unscheduled < -0.5 && <p className="mt-2 text-xs text-slate-600">These lines add up to {qtyText(total)}, more than DEAR's On Order of {qtyText(onOrderNum)}. DEAR may not have caught up yet.</p>}
+      {rows.length > 0 && unscheduled < -0.5 && <p className="mt-2 text-xs text-slate-600">The lines above add up to {qtyText(freshTotal)}, more than DEAR's On Order of {qtyText(onOrderNum)}. DEAR may not have caught up yet.</p>}
     </div>
   );
 }
