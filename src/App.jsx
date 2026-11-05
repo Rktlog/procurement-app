@@ -25,6 +25,7 @@ const WmsDropshipPage = lazy(() => import('./pages/WmsDropshipPage'));
 const WmsAssistantPage = lazy(() => import('./pages/WmsAssistantPage'));
 const InboxPage = lazy(() => import('./pages/InboxPage'));
 const SalesAssistantPage = lazy(() => import('./pages/SalesAssistantPage'));
+const PurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage'));
 const UserAccessPage = lazy(() => import('./pages/UserAccessPage'));
 
 export default function App() {
@@ -54,6 +55,7 @@ function AuthGate() {
 
         <Route path="procurement" element={<RequireApp appId="procurement" />}>
           <Route index element={<ModuleIndex appId="procurement" />} />
+          <Route path="purchase-orders" element={<PurchaseOrdersPage />} />
           <Route path="reorder" element={<ReorderPage />} />
           <Route path="urgent" element={<UrgentOrdersPage />} />
           <Route path="longterm" element={<LongtermOrdersPage />} />

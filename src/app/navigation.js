@@ -34,6 +34,13 @@ export const MODULES = [
         platforms: ['cin7'], // POs are created in DEAR/Cin7
       },
       {
+        path: '/procurement/purchase-orders',
+        label: 'Purchase orders',
+        description: 'Every active purchase order from DEAR: expected delivery, missing invoices, what is waiting for delivery, and the value of each invoice.',
+        icon: Receipt,
+        platforms: ['cin7'], // read from DEAR/Cin7
+      },
+      {
         path: '/procurement/urgent',
         label: 'Urgent orders',
         description: 'Approved sales that are short on stock right now.',
