@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
+import IncomingBreakdown from './IncomingBreakdown';
 
 const DEFAULT_PLANNING_MONTHS = 6;
 
@@ -320,6 +321,7 @@ function CollapsibleProductCard({ product, planningMonths }) {
             </div>
 
             <div className="pt-4 md:pt-0 md:pl-4">
+              <IncomingBreakdown sku={product.sku} onOrder={onOrderNum} />
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Recent Purchase Orders</h4>
               <div className="space-y-2 text-xs">
                 {recentPurchases.map((po, idx) => (

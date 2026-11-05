@@ -24,9 +24,8 @@ const WmsPurchasesPage = lazy(() => import('./pages/WmsPurchasesPage'));
 const WmsDropshipPage = lazy(() => import('./pages/WmsDropshipPage'));
 const WmsAssistantPage = lazy(() => import('./pages/WmsAssistantPage'));
 const InboxPage = lazy(() => import('./pages/InboxPage'));
+const SalesAssistantPage = lazy(() => import('./pages/SalesAssistantPage'));
 const UserAccessPage = lazy(() => import('./pages/UserAccessPage'));
-
-
 
 export default function App() {
   return (
@@ -70,6 +69,11 @@ function AuthGate() {
           <Route path="assistant" element={<WmsAssistantPage />} />
         </Route>
 
+        <Route path="inbox" element={<RequireApp appId="inbox" />}>
+          <Route index element={<ModuleIndex appId="inbox" />} />
+          <Route path="mail" element={<InboxPage />} />
+        </Route>
+
         <Route path="shipping" element={<RequireApp appId="shipping" />}>
           <Route index element={<ModuleIndex appId="shipping" />} />
           <Route path="pantone" element={<PantoneFulfillmentPage />} />
@@ -79,11 +83,9 @@ function AuthGate() {
         <Route path="sales" element={<RequireApp appId="sales" />}>
           <Route index element={<ModuleIndex appId="sales" />} />
           <Route path="invoice" element={<CreateInvoicePage />} />
+          <Route path="assistant" element={<SalesAssistantPage />} />
         </Route>
-<Route path="inbox" element={<RequireApp appId="inbox" />}>
-  <Route index element={<ModuleIndex appId="inbox" />} />
-  <Route path="mail" element={<InboxPage />} />
-</Route>
+
         <Route path="admin" element={<RequireApp appId="admin" />}>
           <Route index element={<Navigate to="users" replace />} />
           <Route path="users" element={<UserAccessPage />} />

@@ -138,6 +138,13 @@ export const MODULES = [
         description: 'Turn a Shopify draft order into an invoice or quote.',
         icon: FileText,
       },
+      {
+        path: '/sales/assistant',
+        label: 'Product assistant',
+        description: 'Ask about stock, list prices, when stock is coming in and what sold recently.',
+        icon: Sparkles,
+        platforms: ['cin7'], // reads Cin7/DEAR data, so Seaga only
+      },
     ],
   },
   {
