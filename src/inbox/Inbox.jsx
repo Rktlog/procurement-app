@@ -48,6 +48,7 @@ export default function Inbox() {
   const [busy, setBusy] = useState(false);
   const [autoFind, setAutoFind] = useState(false);
   const [freightFocus, setFreightFocus] = useState('');
+  const [checked, setChecked] = useState(() => new Set());
   const [progress, setProgress] = useState('');
   const [notice, setNotice] = useState(
     params.get('gmail') ? { type: 'success', text: 'Gmail is connected.' }
@@ -97,9 +98,33 @@ export default function Inbox() {
   const sup = groups.filter((g) => g.kind === 'supplier').sort((a, b) => b.needs - a.needs || a.label.localeCompare(b.label));
   const fwd = groups.filter((g) => g.kind === 'forwarder');
   const unmatched = groups.find((g) => g.kind === 'unmatched');
+  const selfGroup = groups.find((g) => g.kind === 'self');
   const totalNeeds = groups.reduce((n, g) => (g.kind === 'unmatched' ? n : n + g.needs), 0);
 
-  const pick = (v) => { setView(v); setSelectedId(null); };
+  const pick = (v) => {
+    setView(v); setSelectedId(null); setChecked(new Set());
+    if (v === 'self' || v === 'archived') setFilter('');
+    else if (view === 'self' || view === 'archived') setFilter('attention');
+  };
+  useEffect(() => { setChecked(new Set()); }, [filter]);
+  const archiveChecked = async ({ archived, ignore }) => {
+    const ids = [...checked];
+    if (!ids.length) return;
+    if (ignore && !window.confirm(`Archive these ${ids.length} and ignore future mail from their senders? Mail from those senders will be archived automatically and never read. You can undo this under Contacts and settings.`)) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const r = await inbox('archive_threads', { ids, archived, ignore });
+      setNotice({ type: 'success', text: archived
+        ? `Archived ${r.archived}.${r.ignored_senders ? ` Ignoring ${r.ignored_senders} sender(s)${r.also_archived ? ` and archived ${r.also_archived} more from them` : ''}.` : ''}`
+        : `Restored ${r.restored}.` });
+      setChecked(new Set());
+      await refreshAll();
+    } catch (err) {
+      setNotice({ type: 'error', text: err.message });
+    }
+    setBusy(false);
+  };
   const openFreight = (po) => { setFreightFocus(po || ''); setView('freight'); setSelectedId(null); };
   const findSuppliers = () => { setAutoFind(true); setView('settings'); setSelectedId(null); };
   const navBtn = (key, label, count, extra) => (
@@ -137,6 +162,8 @@ export default function Inbox() {
           {fwd.map((g) => navBtn(g.key, g.label, g.needs, g.waiting ? `${g.waiting} waiting` : ''))}
           <div className="pt-3" />
           {unmatched && navBtn('unmatched', 'Unmatched senders', 0, String(unmatched.total))}
+          {selfGroup && navBtn('self', 'Notes to self', 0, String(selfGroup.total))}
+          {navBtn('archived', 'Archived', 0, overview?.archived ? String(overview.archived) : '')}
           {navBtn('settings', 'Contacts and settings', 0)}
         </nav>
 
@@ -151,16 +178,35 @@ export default function Inbox() {
         ) : (
           <>
             <section aria-label="Conversations" className={`rounded-xl border border-slate-200 bg-white ${selectedId ? 'hidden lg:block' : ''}`}>
+              {view !== 'self' && view !== 'archived' && (
               <div className="flex flex-wrap gap-1 p-2 border-b border-slate-100">
                 {FILTERS.map(([id, label]) => (
                   <button key={id} type="button" onClick={() => setFilter(id)}
                     className={`rounded-full px-2.5 py-1 text-xs font-semibold cursor-pointer ${filter === id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{label}</button>
                 ))}
               </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs">
+                <label className="flex items-center gap-1.5 font-semibold text-slate-600">
+                  <input type="checkbox" className="h-4 w-4" aria-label="Select all conversations shown" disabled={threads.length === 0}
+                    checked={threads.length > 0 && checked.size === threads.length}
+                    onChange={(e) => setChecked(e.target.checked ? new Set(threads.map((t) => t.id)) : new Set())} />Select all
+                </label>
+                {checked.size > 0 && (view === 'archived'
+                  ? <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: false })}>Restore ({checked.size})</button>
+                  : (
+                    <>
+                      <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: true })}>Archive ({checked.size})</button>
+                      <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: true, ignore: true })}>Archive and ignore senders ({checked.size})</button>
+                    </>
+                  ))}
+              </div>
               <ul className="divide-y divide-slate-100 max-h-[70vh] overflow-y-auto">
                 {threads.map((t) => (
-                  <li key={t.id}>
-                    <button type="button" onClick={() => setSelectedId(t.id)} className={`w-full text-left px-3 py-2.5 cursor-pointer ${selectedId === t.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+                  <li key={t.id} className="flex items-start">
+                    <input type="checkbox" className="mt-3.5 ml-3 h-4 w-4 shrink-0" aria-label={`Select ${t.subject}`} checked={checked.has(t.id)}
+                      onChange={(e) => setChecked((cur) => { const n = new Set(cur); if (e.target.checked) n.add(t.id); else n.delete(t.id); return n; })} />
+                    <button type="button" onClick={() => setSelectedId(t.id)} className={`min-w-0 flex-1 text-left px-3 py-2.5 cursor-pointer ${selectedId === t.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-sm font-semibold text-ink">{t.subject}</span>
                         <span className="shrink-0 text-xs text-slate-400">{timeAgo(t.last_message_at)}</span>
@@ -297,10 +343,21 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
     const r = await run(() => inbox('freight_extract', { thread_id: thread.id }));
     if (!r) return;
     const added = [...r.created, ...r.updated];
-    setNotice({ type: 'success', text: `Added to Freight quotes: ${added.join(', ') || 'nothing new'}. Check every number against this email before sending.${r.skipped.length ? ` Skipped: ${r.skipped.join(', ')}.` : ''}` });
+    const files = r.read?.files?.length ? ` and ${r.read.files.join(', ')}` : '';
+    setNotice({ type: 'success', text: `Added to Freight quotes: ${added.join(', ') || 'nothing new'}. I read ${r.read?.messages ?? 0} message(s)${files}. Found ${r.found_count ?? added.length} PO(s). Check every number against the source before sending.${r.no_details?.length ? ` No skid details were found for ${r.no_details.join(', ')}; fill those in.` : ''}${r.blanked ? ` ${r.blanked} number(s) weren't found in the text, so I left them blank.` : ''}${r.read?.skipped?.length ? ` Couldn't read: ${r.read.skipped.join(', ')}.` : ''}${r.skipped.length ? ` Skipped: ${r.skipped.join(', ')}.` : ''}` });
     onChanged();
     onFreight(r.first);
   };
+  const archive = async (ignore) => {
+    if (ignore && !window.confirm('Archive this and ignore future mail from this sender? Their mail will be archived automatically and never read. You can undo this under Contacts and settings.')) return;
+    const r = await run(() => inbox('archive_threads', { ids: [thread.id], archived: true, ignore }));
+    if (!r) return;
+    setNotice({ type: 'success', text: ignore ? `Archived. Mail from this sender will be archived automatically.${r.also_archived ? ` ${r.also_archived} other conversation(s) from them were archived too.` : ''}` : 'Archived.' });
+    onChanged();
+    onBack();
+  };
+  const restore = async () => { const r = await run(() => inbox('archive_threads', { ids: [thread.id], archived: false }), 'Restored.'); if (r) { await load(); onChanged(); } };
+  const addToTodo = () => run(() => inbox('add_todo', { text: thread.subject, thread_id: thread.id }), "Added to today's to-do.");
   const setCategory = async (category) => { const r = await run(() => inbox('set_thread_category', { id: thread.id, category })); if (r) { await load(); onChanged(); } };
 
   return (
@@ -317,17 +374,28 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
           </div>
           <div className="mt-1 text-xs text-slate-500">Replied in Gmail instead? It shows here after the next check.</div>
         </div>
-        <div className="flex shrink-0 gap-1.5">
+        <div className="flex max-w-[26rem] shrink-0 flex-wrap justify-end gap-1.5">
           {thread.gmail_thread_id && mailEmail && (
             <a href={gmailLink(mailEmail, thread.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className={`${buttonPlain} no-underline`}><ExternalLink size={14} />Open in Gmail</a>
           )}
-          {known && <button type="button" className={buttonPlain} disabled={busy} onClick={makeFreight}>{busy ? 'Reading' : 'Freight quote from this email'}</button>}
+          <button type="button" className={buttonPlain} disabled={busy} onClick={makeFreight}>{busy ? 'Reading' : 'Freight quote from this email'}</button>
+          {thread.is_self && <button type="button" className={buttonPlain} disabled={busy} onClick={addToTodo}>Add to to-do</button>}
+          {thread.archived_at
+            ? <button type="button" className={buttonPlain} disabled={busy} onClick={restore}>Restore</button>
+            : (
+              <>
+                <button type="button" className={buttonPlain} disabled={busy} onClick={() => archive(false)}>Archive</button>
+                {!thread.is_self && <button type="button" className={buttonPlain} disabled={busy} onClick={() => archive(true)}>Archive and ignore sender</button>}
+              </>
+            )}
           {thread.category !== 'done'
             ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('done')}><Check size={14} />Done</button>
             : <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('needs_reply')}>Reopen</button>}
         </div>
       </div>
 
+      {thread.is_self && <p className="mx-3 mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">A reminder you sent to yourself. Claude doesn't read these. Archive it, or add it to your to-do.</p>}
+      {thread.archived_at && <p className="mx-3 mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">This conversation is archived. It comes back by itself if they write again, unless you chose to ignore the sender.</p>}
       {thread.summary && (
         <div className="m-3 rounded-md bg-slate-50 border border-slate-200 p-2.5 text-sm text-slate-700">
           <b>Claude's read:</b> {thread.summary}{thread.reason ? <span className="text-slate-500"> ({thread.reason})</span> : null}
@@ -543,6 +611,21 @@ function SettingsView({ mail, reloadStatus, onChanged, autoFind, onFindStarted }
         </div>
       </div>
 
+      {data.ignored?.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+          <h2 className="text-base font-bold text-ink">Ignored senders</h2>
+          <p className="text-sm text-slate-600">Mail from these addresses is archived automatically and never read. Remove one to see their mail again.</p>
+          <ul className="divide-y divide-slate-100">
+            {data.ignored.map((c) => (
+              <li key={c.id} className="flex items-center justify-between gap-2 min-h-[2.25rem] text-sm">
+                <span className="break-all">{c.email}</span>
+                <button type="button" className="text-xs font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => run(() => inbox('remove_ignored', { id: c.id }), 'Removed. Their next email will show again.')}>Remove</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
         <h2 className="text-base font-bold text-ink">Replies</h2>
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 h-4 w-4" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
@@ -725,7 +808,7 @@ function FreightView({ mailEmail, focus, onOpenThread, setNotice, onChanged }) {
     <div className="space-y-3 max-w-5xl">
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
         <h2 className="text-base font-bold text-ink">Freight quotes</h2>
-        <p className="text-sm text-slate-600">When a supplier sends PO details with skid weights and sizes, open that email and press <b>Freight quote from this email</b>. Each PO appears here as a heading. Check the dims, send them to your forwarders, and their prices fill in as the replies arrive.</p>
+        <p className="text-sm text-slate-600">When a supplier sends PO details with skid weights and sizes, open that email and press <b>Freight quote from this email</b>. It reads the whole conversation, including earlier emails and any PDF or Excel files attached. Each PO appears here as a heading. Check the dims, send them to your forwarders, and their prices fill in as the replies arrive.</p>
         <div className="flex flex-wrap gap-2 pt-1">
           <input className={`${inputClass} !w-56`} value={po} onChange={(e) => setPo(e.target.value)} placeholder="Add a PO by hand, e.g. P23-3276" aria-label="PO number" onKeyDown={(e) => { if (e.key === 'Enter' && po.trim()) addByHand(); }} />
           <button type="button" className={buttonPlain} disabled={busy || !po.trim()} onClick={addByHand}>Add PO</button>
@@ -935,7 +1018,7 @@ function QuoteRow({ q, lowest, mailEmail, reload, setNotice }) {
           {q.price != null ? (
             <>
               <div className="font-bold text-ink">{money(q.price, q.currency)}{!q.currency && <span className="ml-1 text-xs font-normal text-amber-800">currency?</span>} {isLowest && <span className="ml-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Lowest</span>}</div>
-              {q.price_verified ? <span className="text-xs text-emerald-800">Confirmed by you</span> : <span className="text-xs text-amber-800">From their email. Check it.</span>}
+              {q.price_verified ? <span className="text-xs text-emerald-800">Confirmed by you</span> : <span className="text-xs text-amber-800">{q.price_source?.startsWith('File:') ? `From the file ${q.price_source.slice(6)}. Check it.` : 'From their email. Check it.'}</span>}
               {q.price_text && <div className="mt-0.5 max-w-[16rem] text-xs text-slate-500">They wrote: "{q.price_text}"</div>}
             </>
           ) : <span className="text-xs text-slate-500">{q.reply_summary || 'Waiting for their reply'}</span>}
