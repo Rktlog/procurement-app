@@ -137,6 +137,7 @@ export const MODULES = [
         label: 'Create invoice',
         description: 'Turn a Shopify draft order into an invoice or quote.',
         icon: FileText,
+        platforms: ['shopify'], // works from Shopify draft orders, so Shopify companies only
       },
       {
         path: '/sales/assistant',
