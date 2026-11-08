@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { RefreshCw, Send, Check, Paperclip, Sparkles, ArrowLeft, Trash2, ExternalLink, Download } from 'lucide-react';
+import { RefreshCw, Send, Check, Paperclip, Sparkles, ArrowLeft, Trash2, Download, Clock, ExternalLink } from 'lucide-react';
 import { inbox, inputClass, buttonPrimary, buttonPlain, fmtDateTime, timeAgo } from './api';
 
 const CAT = {
-  new: ['Reading', 'bg-slate-100 text-slate-700'],
-  needs_reply: ['Needs reply', 'bg-amber-100 text-amber-800'],
-  waiting: ['Waiting on them', 'bg-blue-100 text-blue-800'],
-  fyi: ['FYI', 'bg-slate-100 text-slate-700'],
-  done: ['Done', 'bg-emerald-100 text-emerald-800'],
+  new: ['Reading it', 'bg-slate-100 text-slate-700'],
+  needs_reply: ['Needs your reply', 'bg-amber-100 text-amber-800'],
+  waiting: ['Waiting for the supplier', 'bg-blue-100 text-blue-800'],
+  fyi: ['For your information', 'bg-slate-100 text-slate-700'],
+  done: ['Finished', 'bg-emerald-100 text-emerald-800'],
 };
 // Opens a conversation in Gmail itself, in the connected account.
 const gmailLink = (email, threadId) => `https://mail.google.com/mail/u/${encodeURIComponent(email)}/#all/${threadId}`;
@@ -23,7 +23,8 @@ const isCin7Supplier = (name, suppliers) => suppliers.some((x) => nameKey(x.name
 
 const fmtDay = (d) => (d ? new Date(`${d}T00:00:00Z`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : 'No date');
 
-const FILTERS = [['attention', 'Needs reply'], ['waiting', 'Waiting on them'], ['fyi', 'FYI'], ['done', 'Done'], ['', 'All']];
+const FILTERS = [['attention', 'Needs your reply'], ['waiting', 'Waiting for the supplier'], ['fyi', 'For your information'], ['done', 'Finished'], ['', 'Everything']];
+const errNotice = (err) => ({ type: 'error', text: err.friendly || err.message, detail: err.technical || null });
 
 const Pill = ({ cat }) => {
   const [label, tone] = CAT[cat] || CAT.new;
@@ -33,6 +34,9 @@ const Notice = ({ n }) =>
   n ? (
     <div role={n.type === 'error' ? 'alert' : 'status'} className={`p-3 text-sm rounded-md border ${n.type === 'error' ? 'bg-red-50 border-red-200 text-red-700' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
       {n.text}
+      {n.type === 'error' && n.detail && n.detail !== n.text && (
+        <details className="mt-1 text-xs opacity-80"><summary className="cursor-pointer">Show details for support</summary><span className="break-words">{n.detail}</span></details>
+      )}
     </div>
   ) : null;
 
@@ -58,18 +62,23 @@ export default function Inbox() {
   );
 
   const loadStatus = useCallback(async () => {
-    try { setMail(await inbox('mail_status')); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { setMail(await inbox('mail_status')); } catch (err) { setNotice(errNotice(err)); }
   }, []);
   const loadOverview = useCallback(async () => {
-    try { setOverview(await inbox('inbox_overview')); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { setOverview(await inbox('inbox_overview')); } catch (err) { setNotice(errNotice(err)); }
   }, []);
   const loadThreads = useCallback(async () => {
     if (['today', 'settings', 'freight', 'pos'].includes(view)) return;
     try { setThreads((await inbox('list_threads', { group: view, category: filter })).threads); }
-    catch (err) { setNotice({ type: 'error', text: err.message }); }
+    catch (err) { setNotice(errNotice(err)); }
   }, [view, filter]);
 
   useEffect(() => { loadStatus(); loadOverview(); }, [loadStatus, loadOverview]);
+  // A link such as /inbox/mail?thread=... (from the purchase order page) opens that email straight away.
+  useEffect(() => {
+    const t = params.get('thread');
+    if (t) { setView('all'); setFilter(''); setSelectedId(t); }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { loadThreads(); }, [loadThreads]);
 
   const refreshAll = useCallback(async () => { await Promise.all([loadStatus(), loadOverview(), loadThreads()]); }, [loadStatus, loadOverview, loadThreads]);
@@ -87,9 +96,9 @@ export default function Inbox() {
       }
       await inbox('build_todo');
       const s = last?.sync, t = last?.triage;
-      setNotice({ type: 'success', text: `Checked ${s?.listed ?? 0} conversations, ${s?.synced ?? 0} updated. Claude read ${t?.triaged ?? 0} and drafted ${t?.drafted ?? 0} replies.${t?.failed ? ` ${t.failed} couldn't be read and will be retried.` : ''}` });
+      setNotice({ type: 'success', text: `Looked at ${s?.listed ?? 0} emails; ${s?.synced ?? 0} were new or changed. I read ${t?.triaged ?? 0} and wrote ${t?.drafted ?? 0} suggested replies.${t?.failed ? ` ${t.failed} couldn't be read and will be retried.` : ''}` });
     } catch (err) {
-      setNotice({ type: 'error', text: err.message });
+      setNotice(errNotice(err));
     }
     setProgress('');
     setBusy(false);
@@ -101,29 +110,43 @@ export default function Inbox() {
   const fwd = groups.filter((g) => g.kind === 'forwarder');
   const unmatched = groups.find((g) => g.kind === 'unmatched');
   const selfGroup = groups.find((g) => g.kind === 'self');
+  const snoozedCount = overview?.snoozed || 0;
   const totalNeeds = groups.reduce((n, g) => (g.kind === 'unmatched' ? n : n + g.needs), 0);
 
   const pick = (v) => {
     setView(v); setSelectedId(null); setChecked(new Set());
-    if (v === 'self' || v === 'archived') setFilter('');
-    else if (view === 'self' || view === 'archived') setFilter('attention');
+    if (v === 'self' || v === 'archived' || v === 'snoozed') setFilter('');
+    else if (view === 'self' || view === 'archived' || view === 'snoozed') setFilter('attention');
   };
   useEffect(() => { setChecked(new Set()); }, [filter]);
+  const snoozeChecked = async (until) => {
+    const ids = [...checked];
+    if (!ids.length) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      await inbox('snooze_threads', { ids, until });
+      setNotice({ type: 'success', text: until === 'clear' ? 'They are back in your list.' : `Done. They will come back ${until === 'tomorrow' ? 'tomorrow morning' : until === '3days' ? 'in 3 days' : 'next Monday'}, or sooner if the supplier writes again.` });
+      setChecked(new Set());
+      await refreshAll();
+    } catch (err) { setNotice(errNotice(err)); }
+    setBusy(false);
+  };
   const archiveChecked = async ({ archived, ignore }) => {
     const ids = [...checked];
     if (!ids.length) return;
-    if (ignore && !window.confirm(`Archive these ${ids.length} and ignore future mail from their senders? Mail from those senders will be archived automatically and never read. You can undo this under Contacts and settings.`)) return;
+    if (ignore && !window.confirm(`Archive these ${ids.length} and hide future emails from their senders? Emails from them will go straight to Archived and I won't read them. You can undo this under Setup.`)) return;
     setBusy(true);
     setNotice(null);
     try {
       const r = await inbox('archive_threads', { ids, archived, ignore });
       setNotice({ type: 'success', text: archived
         ? `Archived ${r.archived}.${r.ignored_senders ? ` Ignoring ${r.ignored_senders} sender(s)${r.also_archived ? ` and archived ${r.also_archived} more from them` : ''}.` : ''}`
-        : `Restored ${r.restored}.` });
+        : `Put ${r.restored} back in your list.` });
       setChecked(new Set());
       await refreshAll();
     } catch (err) {
-      setNotice({ type: 'error', text: err.message });
+      setNotice(errNotice(err));
     }
     setBusy(false);
   };
@@ -143,31 +166,32 @@ export default function Inbox() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className={buttonPrimary} disabled={busy || !mail.connected} onClick={syncNow}>
-          <RefreshCw size={15} className={busy ? 'animate-spin' : ''} />{busy ? progress || 'Working' : 'Check mail now'}
+          <RefreshCw size={15} className={busy ? 'animate-spin' : ''} />{busy ? progress || 'Working' : 'Get new emails'}
         </button>
         <span className="text-xs text-slate-500">
           {mail.connected ? <>Connected as <b>{mail.email}</b>{mail.last_sync ? ` · last checked ${timeAgo(mail.last_sync)} ago` : ' · not checked yet'}</> : 'Gmail is not connected'}
         </span>
-        {!mail.ai_configured && <span className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">Claude isn't set up (add ANTHROPIC_API_KEY). Mail will be sorted by supplier but not read.</span>}
+        {!mail.ai_configured && <span className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">The assistant isn't switched on yet (your admin needs to add the AI key). Mail will be sorted by supplier but not read.</span>}
       </div>
       <Notice n={notice} />
 
       <div className="grid gap-4 lg:grid-cols-[14rem_21rem_minmax(0,1fr)] items-start">
         {/* ------------------------------------------------------ left: groups */}
-        <nav aria-label="Suppliers" className={`rounded-xl border border-slate-200 bg-white p-2 space-y-0.5 ${selectedId ? 'hidden lg:block' : ''}`}>
-          {navBtn('today', 'Today', 0, overview?.drafts_waiting ? `${overview.drafts_waiting} drafts` : '')}
-          {navBtn('all', 'All mail', totalNeeds)}
-          {navBtn('freight', 'Freight quotes', 0, overview?.freight_open ? `${overview.freight_open} open` : '')}
+        <nav aria-label="Main menu" className={`rounded-xl border border-slate-200 bg-white p-2 space-y-0.5 ${selectedId ? 'hidden lg:block' : ''}`}>
+          {navBtn('today', 'Today', 0, overview?.drafts_waiting ? `${overview.drafts_waiting} replies ready` : '')}
+          {navBtn('all', 'All emails', totalNeeds)}
           {navBtn('pos', 'Purchase orders', 0, overview?.po_count ? String(overview.po_count) : '')}
+          {navBtn('freight', 'Freight quotes', 0, overview?.freight_open ? `${overview.freight_open} open` : '')}
           {sup.length > 0 && <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Suppliers</div>}
           {sup.map((g) => navBtn(g.key, g.label, g.needs, g.waiting ? `${g.waiting} waiting` : ''))}
           {fwd.length > 0 && <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Forwarders</div>}
           {fwd.map((g) => navBtn(g.key, g.label, g.needs, g.waiting ? `${g.waiting} waiting` : ''))}
-          <div className="pt-3" />
-          {unmatched && navBtn('unmatched', 'Unmatched senders', 0, String(unmatched.total))}
-          {selfGroup && navBtn('self', 'Notes to self', 0, String(selfGroup.total))}
+          <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Other</div>
+          {unmatched && navBtn('unmatched', "People I don't know yet", 0, String(unmatched.total))}
+          {snoozedCount > 0 && navBtn('snoozed', 'Remind me later', 0, String(snoozedCount))}
+          {selfGroup && navBtn('self', 'Notes to myself', 0, String(selfGroup.total))}
           {navBtn('archived', 'Archived', 0, overview?.archived ? String(overview.archived) : '')}
-          {navBtn('settings', 'Contacts and settings', 0)}
+          {navBtn('settings', 'Setup', 0)}
         </nav>
 
         {/* ----------------------------------------------- middle and right */}
@@ -190,11 +214,11 @@ export default function Inbox() {
         ) : view === 'settings' ? (
           <div className="lg:col-span-2"><SettingsView mail={mail} reloadStatus={loadStatus} onChanged={refreshAll} autoFind={autoFind} onFindStarted={() => setAutoFind(false)} /></div>
         ) : view === 'today' ? (
-          <div className="lg:col-span-2"><TodayView overview={overview} reload={loadOverview} onOpen={(id) => { setView('all'); setFilter(''); setSelectedId(id); }} connected={mail.connected} mail={mail} setNotice={setNotice} unfiled={unmatched?.total || 0} onFind={findSuppliers} /></div>
+          <div className="lg:col-span-2"><TodayView go={pick} overview={overview} reload={loadOverview} onOpen={(id) => { setView('all'); setFilter(''); setSelectedId(id); }} connected={mail.connected} mail={mail} setNotice={setNotice} unfiled={unmatched?.total || 0} onFind={findSuppliers} /></div>
         ) : (
           <>
             <section aria-label="Conversations" className={`rounded-xl border border-slate-200 bg-white ${selectedId ? 'hidden lg:block' : ''}`}>
-              {view !== 'self' && view !== 'archived' && (
+              {view !== 'self' && view !== 'archived' && view !== 'snoozed' && (
               <div className="flex flex-wrap gap-1 p-2 border-b border-slate-100">
                 {FILTERS.map(([id, label]) => (
                   <button key={id} type="button" onClick={() => setFilter(id)}
@@ -209,13 +233,21 @@ export default function Inbox() {
                     onChange={(e) => setChecked(e.target.checked ? new Set(threads.map((t) => t.id)) : new Set())} />Select all
                 </label>
                 {checked.size > 0 && (view === 'archived'
-                  ? <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: false })}>Restore ({checked.size})</button>
-                  : (
-                    <>
-                      <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: true })}>Archive ({checked.size})</button>
-                      <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: true, ignore: true })}>Archive and ignore senders ({checked.size})</button>
-                    </>
-                  ))}
+                  ? <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: false })}>Put back in my list ({checked.size})</button>
+                  : view === 'snoozed'
+                    ? <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => snoozeChecked('clear')}>Show again now ({checked.size})</button>
+                    : (
+                      <>
+                        <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: true })}>Archive ({checked.size})</button>
+                        <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" disabled={busy} onClick={() => archiveChecked({ archived: true, ignore: true })}>Archive and hide these senders in future ({checked.size})</button>
+                        <select aria-label="Remind me later" className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs font-semibold text-blue-700" value="" onChange={(e) => e.target.value && snoozeChecked(e.target.value)}>
+                          <option value="">Remind me later…</option>
+                          <option value="tomorrow">Tomorrow morning</option>
+                          <option value="3days">In 3 days</option>
+                          <option value="nextweek">Next Monday</option>
+                        </select>
+                      </>
+                    ))}
               </div>
               <ul className="divide-y divide-slate-100 max-h-[70vh] overflow-y-auto">
                 {threads.map((t) => (
@@ -232,13 +264,14 @@ export default function Inbox() {
                         <Pill cat={t.category} />
                         {t.urgency === 'high' && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[0.7rem] font-semibold text-red-800">Urgent</span>}
                         {t.has_draft && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[0.7rem] font-semibold text-violet-800">Draft ready</span>}
-                        {t.freight_detected && <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[0.7rem] font-semibold text-sky-800">Freight details</span>}
+                        {t.freight_detected && <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[0.7rem] font-semibold text-sky-800">Has shipment details</span>}
+                        {t.payment_risk && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[0.7rem] font-semibold text-red-800">Check payment details</span>}
                         {t.has_attachments && <Paperclip size={12} className="text-slate-400" aria-label="Has attachments" />}
                       </div>
                     </button>
                   </li>
                 ))}
-                {threads.length === 0 && <li className="p-6 text-center text-sm text-slate-500">Nothing here{filter === 'attention' ? '. No replies waiting.' : '.'}</li>}
+                {threads.length === 0 && <li className="p-6 text-center text-sm text-slate-500">{filter === 'attention' ? "You're all caught up. Nothing needs your reply." : 'Nothing here.'}</li>}
               </ul>
             </section>
             <section aria-label="Conversation" className={selectedId ? '' : 'hidden lg:block'}>
@@ -256,62 +289,97 @@ export default function Inbox() {
 }
 
 // ------------------------------------------------------------------ today
-function TodayView({ overview, reload, onOpen, connected, mail, setNotice, unfiled, onFind }) {
+function TodayView({ go, overview, reload, onOpen, connected, mail, setNotice, unfiled, onFind }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const run = async (fn) => { setBusy(true); try { await fn(); await reload(); } catch (err) { setNotice({ type: 'error', text: err.message }); } setBusy(false); };
+  const run = async (fn) => { setBusy(true); try { await fn(); await reload(); } catch (err) { setNotice(errNotice(err)); } setBusy(false); };
   if (!overview) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
   if (!connected) return <ConnectCard mail={mail} setNotice={setNotice} />;
 
   const today = overview.todos.filter((t) => t.for_date === overview.today);
   const carried = overview.todos.filter((t) => t.for_date !== overview.today && !t.done);
+  const needsReply = overview.groups.filter((g) => g.kind === 'supplier' || g.kind === 'forwarder').reduce((n, g) => n + g.needs, 0);
+  const hour = Number(new Date().toLocaleString('en-AU', { hour: 'numeric', hour12: false, timeZone: 'Australia/Melbourne' }));
+  const hello = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const cards = [
+    { n: overview.drafts_waiting || 0, label: 'Suggested replies ready', hint: 'Read them, change anything, then send', view: 'all', tone: 'border-violet-200 bg-violet-50 text-violet-900' },
+    { n: needsReply, label: 'Emails waiting for your reply', hint: 'Suppliers and forwarders waiting on you', view: 'all', tone: 'border-amber-200 bg-amber-50 text-amber-900' },
+    { n: overview.freight_open || 0, label: 'Freight quotes in progress', hint: 'Check the box sizes, then ask for a price', view: 'freight', tone: 'border-sky-200 bg-sky-50 text-sky-900' },
+  ];
   const Item = ({ t }) => (
-    <li className="flex items-start gap-2.5 py-2">
-      <input type="checkbox" className="mt-1 h-4 w-4 cursor-pointer" checked={t.done} disabled={busy} aria-label={t.text}
+    <li className="flex items-start gap-3 py-2.5">
+      <input type="checkbox" className="mt-1 h-5 w-5 cursor-pointer" checked={t.done} disabled={busy} aria-label={`Done: ${t.text}`}
         onChange={(e) => run(() => inbox('toggle_todo', { id: t.id, done: e.target.checked }))} />
       <div className="min-w-0 flex-1">
-        <div className={`text-sm ${t.done ? 'line-through text-slate-400' : 'text-ink'}`}>{t.text}</div>
-        <div className="mt-0.5 flex gap-2 text-xs">
-          {t.priority === 'high' && <span className="font-semibold text-red-700">Urgent</span>}
+        <div className={`text-[0.95rem] leading-snug ${t.done ? 'line-through text-slate-400' : 'text-ink'}`}>{t.text}</div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+          {t.priority === 'high' && <span className="rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-800">Do first</span>}
           {t.source === 'manual' && <span className="text-slate-400">Added by you</span>}
-          {t.thread_id && <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" onClick={() => onOpen(t.thread_id)}>Open email</button>}
+          {t.thread_id && <button type="button" className="font-semibold text-blue-700 hover:underline cursor-pointer" onClick={() => onOpen(t.thread_id)}>Open the email</button>}
           {t.gmail_thread_id && mail.email && <a href={gmailLink(mail.email, t.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className="font-semibold text-blue-700 hover:underline">Open in Gmail</a>}
         </div>
       </div>
-      <button type="button" aria-label="Remove" className="text-slate-300 hover:text-red-600 cursor-pointer" onClick={() => run(() => inbox('delete_todo', { id: t.id }))}><Trash2 size={14} /></button>
+      <button type="button" aria-label="Remove this" className="text-slate-300 hover:text-red-600 cursor-pointer" onClick={() => run(() => inbox('delete_todo', { id: t.id }))}><Trash2 size={15} /></button>
     </li>
   );
 
   return (
-    <div className="space-y-3 max-w-2xl">
-    {unfiled > 0 && (
-      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-bold text-amber-950">{unfiled} conversations are from senders that aren't filed yet</div>
-          <div className="text-xs text-amber-900">Claude only reads mail from saved suppliers and forwarders. It can suggest who each sender is, and you approve every one.</div>
-        </div>
-        <button type="button" className={buttonPrimary} onClick={onFind}><Sparkles size={14} />Find suppliers from my mail</button>
+    <div className="space-y-4 max-w-3xl">
+      <div>
+        <h2 className="text-xl font-bold text-ink">{hello}</h2>
+        <p className="text-sm text-slate-600">Here is what needs you today.</p>
       </div>
-    )}
-    <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-base font-bold text-ink">Today's to-do</h2>
-        <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(() => inbox('build_todo', { force: true }))}><Sparkles size={14} />Rebuild from email</button>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {cards.map((c) => (
+          <button key={c.label} type="button" onClick={() => go(c.view)} className={`rounded-xl border p-3.5 text-left cursor-pointer hover:shadow-sm ${c.tone}`}>
+            <span className="block text-3xl font-bold leading-none">{c.n}</span>
+            <span className="mt-1.5 block text-sm font-semibold">{c.label}</span>
+            <span className="mt-0.5 block text-xs opacity-80">{c.hint}</span>
+          </button>
+        ))}
       </div>
-      {today.length === 0 && carried.length === 0 && <p className="text-sm text-slate-500">Nothing yet. The list is built each morning from your email, or press Rebuild.</p>}
-      <ul className="divide-y divide-slate-100">{today.map((t) => <Item key={t.id} t={t} />)}</ul>
-      {carried.length > 0 && (
-        <div>
-          <div className="text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Carried over</div>
-          <ul className="divide-y divide-slate-100">{carried.map((t) => <Item key={t.id} t={t} />)}</ul>
+
+      {unfiled > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-bold text-amber-950">{unfiled} emails are from people I don't know yet</div>
+            <div className="text-xs text-amber-900">I only read emails from suppliers and forwarders you've saved. I can suggest who each person is, and you approve every one.</div>
+          </div>
+          <button type="button" className={buttonPrimary} onClick={onFind}><Sparkles size={14} />Work out who they are</button>
         </div>
       )}
-      <div className="flex gap-2 pt-1">
-        <input className={inputClass} value={text} placeholder="Add your own task" onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && text.trim()) run(async () => { await inbox('add_todo', { text }); setText(''); }); }} />
-        <button type="button" className={buttonPlain} disabled={busy || !text.trim()} onClick={() => run(async () => { await inbox('add_todo', { text }); setText(''); })}>Add</button>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-bold text-ink">Your to-do list for today</h2>
+          <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(() => inbox('build_todo', { force: true }))}><Sparkles size={14} />Refresh my list</button>
+        </div>
+        {today.length === 0 && carried.length === 0 && <p className="text-sm text-slate-500">Nothing here yet. Your list is made each morning from your emails, or press Refresh my list.</p>}
+        <ul className="divide-y divide-slate-100">{today.map((t) => <Item key={t.id} t={t} />)}</ul>
+        {carried.length > 0 && (
+          <div>
+            <div className="text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Still to do from earlier</div>
+            <ul className="divide-y divide-slate-100">{carried.map((t) => <Item key={t.id} t={t} />)}</ul>
+          </div>
+        )}
+        <div className="flex gap-2 pt-1">
+          <input className={inputClass} value={text} placeholder="Add something to your list" aria-label="Add something to your list" onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && text.trim()) run(async () => { await inbox('add_todo', { text }); setText(''); }); }} />
+          <button type="button" className={buttonPlain} disabled={busy || !text.trim()} onClick={() => run(async () => { await inbox('add_todo', { text }); setText(''); })}>Add</button>
+        </div>
       </div>
-    </div>
+
+      <details className="rounded-xl border border-slate-200 bg-white p-4 text-sm">
+        <summary className="cursor-pointer font-semibold text-blue-700">New here? How this works</summary>
+        <ol className="mt-3 list-decimal space-y-2 pl-5 text-slate-700">
+          <li>Press <b>Get new emails</b> at the top. It brings in your latest supplier emails.</li>
+          <li>When an email needs an answer, I write a suggested reply. Open it, read it, change anything you like, then press <b>Send</b>. <b>Nothing is ever sent unless you press Send.</b></li>
+          <li>Don't need an email? Press <b>More</b> on it, then <b>Archive</b>, or ask me to <b>remind you later</b>.</li>
+          <li>When a supplier sends box sizes and weights, open <b>Freight quotes</b> to ask the forwarders for a price.</li>
+          <li>Under <b>Purchase orders</b> you can see each order and every email about it.</li>
+        </ol>
+      </details>
     </div>
   );
 }
@@ -325,10 +393,11 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
   const [people, setPeople] = useState(null);
   const [poInput, setPoInput] = useState('');
   const [busyFile, setBusyFile] = useState(null);
+  const [menu, setMenu] = useState(false);
 
   const load = useCallback(async () => {
     setData(null);
-    try { const r = await inbox('get_thread', { id }); setData(r); setDraft(r.draft); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { const r = await inbox('get_thread', { id }); setData(r); setDraft(r.draft); } catch (err) { setNotice(errNotice(err)); }
   }, [id, setNotice]);
   useEffect(() => { load(); }, [load]);
 
@@ -336,7 +405,7 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
     setBusy(true);
     setNotice(null);
     try { const r = await fn(); if (ok) setNotice({ type: 'success', text: ok }); return r; }
-    catch (err) { setNotice({ type: 'error', text: err.message }); }
+    catch (err) { setNotice(errNotice(err)); }
     finally { setBusy(false); }
   };
 
@@ -389,88 +458,37 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
     } catch (err) {
-      setNotice({ type: 'error', text: err.message });
+      setNotice(errNotice(err));
     }
     setBusyFile(null);
   };
+  const menuBtn = 'block w-full rounded-md px-3 py-2 text-left text-sm text-ink hover:bg-slate-100 cursor-pointer disabled:opacity-50';
+  const snooze = async (until) => {
+    setMenu(false);
+    const r = await run(() => inbox('snooze_threads', { ids: [thread.id], until }));
+    if (!r) return;
+    setNotice({ type: 'success', text: until === 'clear' ? 'It is back in your list.' : `Okay. I'll bring this back ${until === 'tomorrow' ? 'tomorrow morning' : until === '3days' ? 'in 3 days' : 'next Monday'}, or sooner if they write again.` });
+    onChanged();
+    if (until !== 'clear') onBack();
+  };
+  const snoozedNow = !!thread.snoozed_until && new Date(thread.snoozed_until) > new Date();
   const archive = async (ignore) => {
-    if (ignore && !window.confirm('Archive this and ignore future mail from this sender? Their mail will be archived automatically and never read. You can undo this under Contacts and settings.')) return;
+    setMenu(false);
+    if (ignore && !window.confirm('Archive this and hide future emails from this sender? Their emails will go straight to Archived and I won\'t read them. You can undo this under Setup.')) return;
     const r = await run(() => inbox('archive_threads', { ids: [thread.id], archived: true, ignore }));
     if (!r) return;
-    setNotice({ type: 'success', text: ignore ? `Archived. Mail from this sender will be archived automatically.${r.also_archived ? ` ${r.also_archived} other conversation(s) from them were archived too.` : ''}` : 'Archived.' });
+    setNotice({ type: 'success', text: ignore ? `Archived. Future emails from this sender will go straight to Archived.${r.also_archived ? ` ${r.also_archived} other email(s) from them were archived too.` : ''}` : 'Archived.' });
     onChanged();
     onBack();
   };
-  const restore = async () => { const r = await run(() => inbox('archive_threads', { ids: [thread.id], archived: false }), 'Restored.'); if (r) { await load(); onChanged(); } };
-  const addToTodo = () => run(() => inbox('add_todo', { text: thread.subject, thread_id: thread.id }), "Added to today's to-do.");
+  const restore = async () => { setMenu(false); const r = await run(() => inbox('archive_threads', { ids: [thread.id], archived: false }), 'Put back in your list.'); if (r) { await load(); onChanged(); } };
+  const addToTodo = () => { setMenu(false); return run(() => inbox('add_todo', { text: thread.subject, thread_id: thread.id }), 'Added to your to-do list.'); };
   const setCategory = async (category) => { const r = await run(() => inbox('set_thread_category', { id: thread.id, category })); if (r) { await load(); onChanged(); } };
 
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white">
-      <div className="flex items-start gap-2 border-b border-slate-100 p-3">
-        <button type="button" onClick={onBack} aria-label="Back" className="lg:hidden mt-0.5 text-slate-500 cursor-pointer"><ArrowLeft size={18} /></button>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base font-bold text-ink break-words">{thread.subject}</h2>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-            <Pill cat={thread.category} />
-            <span>{thread.supplier_name || thread.group_label || 'Unmatched sender'}</span>
-            <span>{thread.message_count} messages</span>
-            {thread.freight_detected && <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[0.7rem] font-semibold text-sky-800">Freight details found</span>}
-          </div>
-          <div className="mt-1 text-xs text-slate-500">Replied in Gmail instead? It shows here after the next check.</div>
-        </div>
-        <div className="flex max-w-[26rem] shrink-0 flex-wrap justify-end gap-1.5">
-          {thread.gmail_thread_id && mailEmail && (
-            <a href={gmailLink(mailEmail, thread.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className={`${buttonPlain} no-underline`}><ExternalLink size={14} />Open in Gmail</a>
-          )}
-          <button type="button" className={buttonPlain} disabled={busy} onClick={makeFreight}>{busy ? 'Reading' : 'Freight quote from this email'}</button>
-          {thread.is_self && <button type="button" className={buttonPlain} disabled={busy} onClick={addToTodo}>Add to to-do</button>}
-          {thread.archived_at
-            ? <button type="button" className={buttonPlain} disabled={busy} onClick={restore}>Restore</button>
-            : (
-              <>
-                <button type="button" className={buttonPlain} disabled={busy} onClick={() => archive(false)}>Archive</button>
-                {!thread.is_self && <button type="button" className={buttonPlain} disabled={busy} onClick={() => archive(true)}>Archive and ignore sender</button>}
-              </>
-            )}
-          {thread.category !== 'done'
-            ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('done')}><Check size={14} />Done</button>
-            : <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('needs_reply')}>Reopen</button>}
-        </div>
-      </div>
-
-      <div className="mx-3 mt-3 flex flex-wrap items-center gap-1.5 text-xs">
-        <span className="font-semibold text-slate-600">Purchase orders:</span>
-        {poTags.map((x) => (
-          <span key={x.po_number} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
-            {x.po_number}
-            {x.source === 'manual' && <button type="button" aria-label={`Unlink ${x.po_number}`} className="text-slate-400 hover:text-red-600 cursor-pointer" onClick={() => linkPo(x.po_number, false)}>×</button>}
-          </span>
-        ))}
-        {poTags.length === 0 && <span className="text-slate-500">none named in this email</span>}
-        <input aria-label="Link to a PO" placeholder="Link to PO, e.g. P23-3137" className={`${smallInput} !w-48`} value={poInput}
-          onChange={(e) => setPoInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && poInput.trim()) linkPo(poInput, true); }} />
-        <button type="button" className={buttonPlain} disabled={busy || !poInput.trim()} onClick={() => linkPo(poInput, true)}>Link</button>
-      </div>
-      {thread.is_self && <p className="mx-3 mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">A reminder you sent to yourself. Claude doesn't read these. Archive it, or add it to your to-do.</p>}
-      {thread.archived_at && <p className="mx-3 mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">This conversation is archived. It comes back by itself if they write again, unless you chose to ignore the sender.</p>}
-      {thread.summary && (
-        <div className="m-3 rounded-md bg-slate-50 border border-slate-200 p-2.5 text-sm text-slate-700">
-          <b>Claude's read:</b> {thread.summary}{thread.reason ? <span className="text-slate-500"> ({thread.reason})</span> : null}
-        </div>
-      )}
-
-      {!known && (
-        <div className="m-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm space-y-2">
-          <p className="text-amber-900">This sender isn't saved yet, so Claude hasn't read this email. Who is it?</p>
-          <AssignForm thread={thread} messages={messages} people={people} setPeople={setPeople} busy={busy}
-            onSave={async (payload) => { const r = await run(() => inbox('save_contact', payload), 'Saved. Claude will read it on the next check.'); if (r) { await load(); onChanged(); } }} />
-        </div>
-      )}
-
-      <div className="space-y-3 p-3">
-        {messages.map((m) => (
-          <article key={m.id} className={`rounded-lg border p-3 ${m.is_from_us ? 'border-blue-100 bg-blue-50/50' : 'border-slate-200'}`}>
+  const latest = messages.slice(-2);
+  const earlier = messages.slice(0, -2);
+  const renderMsg = (m) => (
+        <article key={m.id} className={`rounded-lg border p-3 ${m.is_from_us ? 'border-blue-100 bg-blue-50/50' : 'border-slate-200'}`}>
             <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs text-slate-500">
               <span className="font-semibold text-slate-700">{m.is_from_us ? 'You' : m.from_name || m.from_addr}</span>
               <span>{fmtDateTime(m.sent_at)}</span>
@@ -486,8 +504,100 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
                 ))}
               </div>
             )}
-          </article>
+        </article>
+  );
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white">
+      <div className="flex items-start gap-2 border-b border-slate-100 p-3">
+        <button type="button" onClick={onBack} aria-label="Back to the list" className="lg:hidden mt-0.5 text-slate-500 cursor-pointer"><ArrowLeft size={18} /></button>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-bold text-ink break-words">{thread.subject}</h2>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            <Pill cat={thread.category} />
+            <span>{thread.supplier_name || thread.group_label || "Someone I don't know yet"}</span>
+            {thread.freight_detected && <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[0.7rem] font-semibold text-sky-800">Has shipment details</span>}
+            {snoozedNow && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[0.7rem] font-semibold text-slate-700"><Clock size={11} />Reminder set</span>}
+          </div>
+        </div>
+        <div className="relative flex shrink-0 items-center gap-1.5">
+          {thread.category !== 'done'
+            ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('done')}><Check size={14} />Mark as finished</button>
+            : <button type="button" className={buttonPlain} disabled={busy} onClick={() => setCategory('needs_reply')}>Open it again</button>}
+          <button type="button" className={buttonPlain} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>More</button>
+          {menu && (
+            <div role="menu" className="absolute right-0 top-full z-20 mt-1 w-72 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg" onKeyDown={(e) => { if (e.key === 'Escape') setMenu(false); }}>
+              {thread.gmail_thread_id && mailEmail && (
+                <a role="menuitem" href={gmailLink(mailEmail, thread.gmail_thread_id)} target="_blank" rel="noopener noreferrer" className={menuBtn} onClick={() => setMenu(false)}>Open this email in Gmail</a>
+              )}
+              <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={() => { setMenu(false); makeFreight(); }}>Get freight quotes from this email</button>
+              {thread.is_self && <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={addToTodo}>Add to my to-do list</button>}
+              {!thread.archived_at && (
+                <>
+                  <div className="px-3 pb-1 pt-2 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Remind me later</div>
+                  <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={() => snooze('tomorrow')}>Tomorrow morning</button>
+                  <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={() => snooze('3days')}>In 3 days</button>
+                  <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={() => snooze('nextweek')}>Next Monday</button>
+                  {snoozedNow && <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={() => snooze('clear')}>Show it in my list again</button>}
+                </>
+              )}
+              <div className="my-1 border-t border-slate-100" />
+              {thread.archived_at
+                ? <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={restore}>Put back in my list</button>
+                : (
+                  <>
+                    <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={() => archive(false)}>Archive (I don't need this)</button>
+                    {!thread.is_self && <button type="button" role="menuitem" className={menuBtn} disabled={busy} onClick={() => archive(true)}>Archive and hide this sender in future</button>}
+                  </>
+                )}
+            </div>
+          )}
+        </div>
+      </div>
+      {thread.payment_risk && (
+        <div role="alert" className="mx-3 mt-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+          <b>Be careful with this email.</b> It talks about bank or payment details. Scammers often pretend to be a supplier and ask you to pay into a new account. Before you act on it, phone the supplier on a number you already have, not one from this email. I haven't written a reply for it.
+        </div>
+      )}
+      <p className="px-3 pt-2 text-xs text-slate-500">Replied in Gmail instead? It will show here the next time I check.</p>
+
+      <div className="mx-3 mt-3 flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="font-semibold text-slate-600">Purchase orders in this email:</span>
+        {poTags.map((x) => (
+          <span key={x.po_number} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
+            {x.po_number}
+            {x.source === 'manual' && <button type="button" aria-label={`Unlink ${x.po_number}`} className="text-slate-400 hover:text-red-600 cursor-pointer" onClick={() => linkPo(x.po_number, false)}>×</button>}
+          </span>
         ))}
+        {poTags.length === 0 && <span className="text-slate-500">none named</span>}
+        <input aria-label="Link to a PO" placeholder="Link to PO, e.g. P23-3137" className={`${smallInput} !w-48`} value={poInput}
+          onChange={(e) => setPoInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && poInput.trim()) linkPo(poInput, true); }} />
+        <button type="button" className={buttonPlain} disabled={busy || !poInput.trim()} onClick={() => linkPo(poInput, true)}>Link</button>
+      </div>
+      {thread.is_self && <p className="mx-3 mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">A reminder you sent to yourself. I don't read these. Archive it, or add it to your to-do.</p>}
+      {thread.archived_at && <p className="mx-3 mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">This conversation is archived. It comes back by itself if they write again, unless you chose to ignore the sender.</p>}
+      {thread.summary && (
+        <div className="m-3 rounded-md bg-slate-50 border border-slate-200 p-2.5 text-sm text-slate-700">
+          <b>Quick summary:</b> {thread.summary}{thread.reason ? <span className="text-slate-500"> ({thread.reason})</span> : null}
+        </div>
+      )}
+
+      {!known && (
+        <div className="m-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm space-y-2">
+          <p className="text-amber-900">This sender isn't saved yet, so I haven't read this email. Who is it?</p>
+          <AssignForm thread={thread} messages={messages} people={people} setPeople={setPeople} busy={busy}
+            onSave={async (payload) => { const r = await run(() => inbox('save_contact', payload), "Saved. I'll read it the next time I check."); if (r) { await load(); onChanged(); } }} />
+        </div>
+      )}
+
+      <div className="space-y-3 p-3">
+        {earlier.length > 0 && (
+          <details className="rounded-lg border border-slate-200 p-2.5">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-700">Show {earlier.length} earlier message{earlier.length === 1 ? '' : 's'}</summary>
+            <div className="mt-2 space-y-3">{earlier.map(renderMsg)}</div>
+          </details>
+        )}
+        {latest.map(renderMsg)}
       </div>
 
       {pos?.length > 0 && (
@@ -504,11 +614,11 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
           {draft ? (
             <>
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-ink">Reply draft</h3>
+                <h3 className="text-sm font-bold text-ink">Suggested reply</h3>
                 <span className="text-xs text-slate-500">Not sent until you click Send</span>
               </div>
-              {draft.note && <p className="rounded-md bg-violet-50 border border-violet-200 p-2 text-xs text-violet-900"><b>Note from Claude:</b> {draft.note}</p>}
-              {hasPlaceholder && <p role="alert" className="rounded-md bg-amber-50 border border-amber-300 p-2 text-xs text-amber-900">Fill in the <b>[[TO CHECK]]</b> parts below. The email can't be sent until they're gone.</p>}
+              {draft.note && <p className="rounded-md bg-violet-50 border border-violet-200 p-2 text-xs text-violet-900"><b>Note:</b> {draft.note}</p>}
+              {hasPlaceholder && <p role="alert" className="rounded-md bg-amber-50 border border-amber-300 p-2 text-xs text-amber-900">Fill in the <b>[[TO CHECK]]</b> parts below. I wasn't sure of those details. The email can't be sent until they're filled in.</p>}
               <div className="grid gap-2 sm:grid-cols-2">
                 <label className="text-xs font-semibold text-slate-600">To<input className={inputClass} value={draft.to_email} onChange={(e) => setDraftField('to_email', e.target.value)} /></label>
                 <label className="text-xs font-semibold text-slate-600">Cc<input className={inputClass} value={draft.cc_email || ''} onChange={(e) => setDraftField('cc_email', e.target.value)} /></label>
@@ -522,10 +632,10 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
                 <button type="button" className={buttonPlain} disabled={busy} onClick={discard}>Discard</button>
               </div>
               <details className="text-sm">
-                <summary className="cursor-pointer font-semibold text-blue-700">Ask Claude to rewrite it</summary>
+                <summary className="cursor-pointer font-semibold text-blue-700">Ask for a different version</summary>
                 <div className="mt-2 space-y-2">
                   <textarea className="w-full min-h-[4rem] rounded-md border border-slate-300 p-2 text-sm" value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="e.g. Ask for carton dimensions and weight, and say we need them by Friday." />
-                  <button type="button" className={buttonPlain} disabled={busy} onClick={generate}><Sparkles size={14} />Rewrite</button>
+                  <button type="button" className={buttonPlain} disabled={busy} onClick={generate}><Sparkles size={14} />Write it again</button>
                 </div>
               </details>
             </>
@@ -533,8 +643,8 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
             <>
               <h3 className="text-sm font-bold text-ink">Write a reply</h3>
               <textarea className="w-full min-h-[4rem] rounded-md border border-slate-300 p-2 text-sm" value={instructions} onChange={(e) => setInstructions(e.target.value)}
-                placeholder="Tell Claude what to say, or leave blank and it will write the reply this email needs." />
-              <button type="button" className={buttonPrimary} disabled={busy} onClick={generate}><Sparkles size={14} />{busy ? 'Writing' : 'Write draft'}</button>
+                placeholder="Say what you want to tell them, or leave this blank and I'll write the reply this email needs." />
+              <button type="button" className={buttonPrimary} disabled={busy} onClick={generate}><Sparkles size={14} />{busy ? 'Writing' : 'Write a reply for me'}</button>
             </>
           )}
         </div>
@@ -585,7 +695,7 @@ function ConnectCard({ mail, setNotice }) {
       <h2 className="text-base font-bold text-ink">Connect Gmail</h2>
       <p className="text-sm text-slate-700">Connect the mailbox your supplier email arrives in. The inbox reads from it and sends from it. Gmail stays exactly as it is.</p>
       {mail.google_configured ? (
-        <button type="button" className={buttonPrimary} disabled={busy} onClick={async () => { setBusy(true); try { window.location.assign((await inbox('mail_connect_url')).url); } catch (err) { setNotice({ type: 'error', text: err.message }); setBusy(false); } }}>Connect Gmail</button>
+        <button type="button" className={buttonPrimary} disabled={busy} onClick={async () => { setBusy(true); try { window.location.assign((await inbox('mail_connect_url')).url); } catch (err) { setNotice(errNotice(err)); setBusy(false); } }}>Connect Gmail</button>
       ) : (
         <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md p-2.5">The Google details haven't been added yet. Follow the steps below first.</p>
       )}
@@ -610,12 +720,12 @@ function SettingsView({ mail, reloadStatus, onChanged, autoFind, onFindStarted }
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  const load = useCallback(async () => { try { setData(await inbox('list_contacts')); } catch (err) { setMsg({ type: 'error', text: err.message }); } }, []);
+  const load = useCallback(async () => { try { setData(await inbox('list_contacts')); } catch (err) { setMsg(errNotice(err)); } }, []);
   useEffect(() => { load(); }, [load]);
   const run = async (fn, ok) => {
     setBusy(true); setMsg(null);
     try { const r = await fn(); setMsg({ type: 'success', text: typeof ok === 'function' ? ok(r) : ok }); await load(); onChanged(); }
-    catch (err) { setMsg({ type: 'error', text: err.message }); }
+    catch (err) { setMsg(errNotice(err)); }
     setBusy(false);
   };
   const nameOfSupplier = useMemo(() => new Map((data?.suppliers || []).map((s) => [s.id, s.name])), [data]);
@@ -639,7 +749,7 @@ function SettingsView({ mail, reloadStatus, onChanged, autoFind, onFindStarted }
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
         <h2 className="text-base font-bold text-ink">Who is who</h2>
-        <p className="text-sm text-slate-600">Claude only reads email from the addresses and domains saved here. This is also how email gets filed under a supplier. Drafts can only be addressed to these contacts or people already in the conversation.</p>
+        <p className="text-sm text-slate-600">I only read emails from the addresses saved here. This is also how emails are sorted under each supplier. Drafts can only be addressed to these contacts or people already in the conversation.</p>
         <div className="grid gap-2 sm:grid-cols-[9rem_1fr_1fr_1fr_auto] items-end">
           <label className="text-xs font-semibold text-slate-600">Type
             <select className={inputClass} value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}><option value="supplier">Supplier</option><option value="forwarder">Forwarder</option></select>
@@ -668,7 +778,7 @@ function SettingsView({ mail, reloadStatus, onChanged, autoFind, onFindStarted }
                   <td className="py-1.5 text-right"><button type="button" className="text-slate-400 hover:text-red-600 cursor-pointer" aria-label="Remove" disabled={busy} onClick={() => run(() => inbox('delete_contact', { id: c.id }), (r) => `Removed. ${r.refiled} conversation(s) re-filed.`)}><Trash2 size={14} /></button></td>
                 </tr>
               ))}
-              {data.contacts.length === 0 && <tr><td colSpan={3} className="py-3 text-slate-500">Nothing saved yet. Open an unmatched email and file its sender, or add addresses here.</td></tr>}
+              {data.contacts.length === 0 && <tr><td colSpan={3} className="py-3 text-slate-500">Nothing saved yet. Open an email from someone I don't know yet and tell me who it is, or add addresses here.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -721,7 +831,7 @@ function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone,
       setMeta({ automated: r.automated, scanned: r.scanned, failed: r.failed });
       setState('done');
     } catch (err) {
-      setMsg({ type: 'error', text: err.message });
+      setMsg(errNotice(err));
       setState('idle');
     }
   }, [setMsg]);
@@ -750,11 +860,11 @@ function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone,
       if (!res.errors?.length) setRows((cur) => cur.filter((r) => !done.has(r.key)));
       setMsg({
         type: res.errors?.length ? 'error' : 'success',
-        text: `Saved ${res.saved}${res.duplicates ? `, ${res.duplicates} already saved` : ''}. ${res.refiled} conversation(s) filed. Press Check mail now and Claude will read them.${res.errors?.length ? ` Problems: ${res.errors.join('; ')}` : ''}`,
+        text: `Saved ${res.saved}${res.duplicates ? `, ${res.duplicates} already saved` : ''}. ${res.refiled} email(s) sorted. Press Get new emails and I'll read them.${res.errors?.length ? ` Problems: ${res.errors.join('; ')}` : ''}`,
       });
       onDone();
     } catch (err) {
-      setMsg({ type: 'error', text: err.message });
+      setMsg(errNotice(err));
     }
     setBusy(false);
   };
@@ -768,7 +878,7 @@ function FindSuppliers({ suppliers, forwarderLabels, autoRun, onStarted, onDone,
         <div className="max-w-2xl">
           <h2 className="text-base font-bold text-ink">Find suppliers from my mail</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Claude looks at who writes to you (names, addresses and subject lines only, never the email text) and matches them to your suppliers.
+            I look at who writes to you (names, addresses and subject lines only, never the email text) and matches them to your suppliers.
             <b className="text-ink"> Nothing is saved until you accept it.</b> You can change or remove any contact afterwards.
           </p>
         </div>
@@ -855,14 +965,14 @@ function FreightView({ mailEmail, focus, onOpenThread, setNotice, onChanged }) {
   const [po, setPo] = useState('');
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
-    try { setData(await inbox('freight_list')); onChanged?.(); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { setData(await inbox('freight_list')); onChanged?.(); } catch (err) { setNotice(errNotice(err)); }
   }, [setNotice, onChanged]);
   useEffect(() => { load(); }, [load]);
 
   const addByHand = async () => {
     setBusy(true);
     setNotice(null);
-    try { await inbox('freight_create', { po_number: po }); setPo(''); await load(); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { await inbox('freight_create', { po_number: po }); setPo(''); await load(); } catch (err) { setNotice(errNotice(err)); }
     setBusy(false);
   };
   if (!data) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
@@ -871,7 +981,7 @@ function FreightView({ mailEmail, focus, onOpenThread, setNotice, onChanged }) {
     <div className="space-y-3 max-w-5xl">
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
         <h2 className="text-base font-bold text-ink">Freight quotes</h2>
-        <p className="text-sm text-slate-600">When a supplier sends PO details with skid weights and sizes, open that email and press <b>Freight quote from this email</b>. It reads the whole conversation, including earlier emails and any PDF or Excel files attached. This also happens automatically when a supplier's dims arrive, and draft quote requests are prepared for your forwarders. Each PO appears here as a heading. Check the dims, send them to your forwarders, and their prices fill in as the replies arrive.</p>
+        <p className="text-sm text-slate-600">When a supplier sends PO details with skid weights and sizes, open that email and press <b>More</b>, then <b>Get freight quotes from this email</b>. It reads the whole conversation, including earlier emails and any PDF or Excel files attached. This also happens automatically when a supplier sends sizes and weights, and draft quote requests are prepared for your forwarders. Each PO appears here as a heading. Check the sizes, send them to your forwarders, and their prices fill in as the replies arrive.</p>
         <div className="flex flex-wrap gap-2 pt-1">
           <input className={`${inputClass} !w-56`} value={po} onChange={(e) => setPo(e.target.value)} placeholder="Add a PO by hand, e.g. P23-3276" aria-label="PO number" onKeyDown={(e) => { if (e.key === 'Enter' && po.trim()) addByHand(); }} />
           <button type="button" className={buttonPlain} disabled={busy || !po.trim()} onClick={addByHand}>Add PO</button>
@@ -897,10 +1007,10 @@ function PoCard({ req, quotes, forwarders, mailEmail, defaultOpen, reload, setNo
     setBusy(true);
     setNotice(null);
     try { const r = await fn(); if (ok) setNotice({ type: 'success', text: typeof ok === 'function' ? ok(r) : ok }); await reload(); return r; }
-    catch (err) { setNotice({ type: 'error', text: err.message }); }
+    catch (err) { setNotice(errNotice(err)); }
     finally { setBusy(false); }
   };
-  const save = (confirmed) => call(() => inbox('freight_save', { id: req.id, ...f, confirmed }), confirmed ? 'Dims marked as checked.' : 'Saved. The dims need checking again before you send.');
+  const save = (confirmed) => call(() => inbox('freight_save', { id: req.id, ...f, confirmed }), confirmed ? 'Marked as checked.' : 'Saved. The sizes need checking again before you send.');
   const setSkid = (i, k, v) => setF((cur) => ({ ...cur, skids: cur.skids.map((s, n) => (n === i ? { ...s, [k]: v } : s)) }));
 
   const drafts = quotes.filter((q) => q.status === 'drafted');
@@ -926,7 +1036,7 @@ function PoCard({ req, quotes, forwarders, mailEmail, defaultOpen, reload, setNo
           <div className="mt-0.5 text-xs text-slate-600">{req.supplier_label || 'Supplier'} · {f.skids.length} skid{f.skids.length === 1 ? '' : 's'}{total ? ` · ${total} ${f.weight_unit || ''}` : ''}</div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {req.dims_confirmed ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Dims checked</span> : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[0.7rem] font-semibold text-amber-800">Check the dims</span>}
+          {req.dims_confirmed ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Sizes checked</span> : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[0.7rem] font-semibold text-amber-800">Check the sizes</span>}
           {asked.length > 0 && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[0.7rem] font-semibold text-blue-800">{priced.length} of {asked.length} quotes in</span>}
           {allIn && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">All quotes in</span>}
           {lowest != null && <span className="text-xs font-semibold text-ink">Lowest {money(lowest, priced[0].currency)}</span>}
@@ -937,7 +1047,7 @@ function PoCard({ req, quotes, forwarders, mailEmail, defaultOpen, reload, setNo
         <div className="space-y-5 border-t border-slate-100 p-4">
           {/* 1. the dims */}
           <div className="space-y-2">
-            <h4 className="text-sm font-bold text-ink">1. The dims</h4>
+            <h4 className="text-sm font-bold text-ink">1. Sizes and weights</h4>
             <p className="text-xs text-slate-600">Exactly as the supplier gave them. Check every number against their email before marking them checked.</p>
             <div className="flex flex-wrap gap-3">
               <label className="text-xs font-semibold text-slate-600">Mode
@@ -976,7 +1086,7 @@ function PoCard({ req, quotes, forwarders, mailEmail, defaultOpen, reload, setNo
               <details className="text-xs text-slate-600"><summary className="cursor-pointer font-semibold text-blue-700">What the supplier's email said</summary><pre className="mt-1 whitespace-pre-wrap rounded bg-slate-50 p-2 font-sans">{req.source_text}</pre></details>
             )}
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" className={buttonPrimary} disabled={busy} onClick={() => save(true)}><Check size={14} />Dims checked</button>
+              <button type="button" className={buttonPrimary} disabled={busy} onClick={() => save(true)}><Check size={14} />Sizes checked</button>
               <button type="button" className={buttonPlain} disabled={busy} onClick={() => save(false)}>Save changes</button>
               {req.source_thread_id && <button type="button" className={buttonPlain} onClick={() => onOpenThread(req.source_thread_id)}>Open the supplier's email</button>}
               <button type="button" className="ml-auto text-xs font-semibold text-slate-500 hover:text-red-700 cursor-pointer" disabled={busy} onClick={() => window.confirm(`Close PO ${req.po_number}? It leaves this list.`) && call(() => inbox('freight_close', { id: req.id }), 'PO closed.')}>Close this PO</button>
@@ -986,10 +1096,10 @@ function PoCard({ req, quotes, forwarders, mailEmail, defaultOpen, reload, setNo
           {/* 2. ask the forwarders */}
           <div className="space-y-2 border-t border-slate-100 pt-4">
             <h4 className="text-sm font-bold text-ink">2. Ask your forwarders for a quote</h4>
-            {forwarders.length === 0 ? <p className="text-xs text-slate-600">No forwarders are saved yet. Add them in Contacts and settings. Quote requests only go to saved forwarders.</p>
+            {forwarders.length === 0 ? <p className="text-xs text-slate-600">No forwarders are saved yet. Add them in Setup. Quote requests only go to saved forwarders.</p>
               : (
                 <>
-                  <p className="text-xs text-slate-600">Drafts are prepared for your saved forwarders automatically when a supplier's dims arrive, and you can make more here. The same dims can go to several forwarders, and requests only go to forwarders you've saved. Nothing is sent until the dims are checked and you press Send.</p>
+                  <p className="text-xs text-slate-600">Drafts are prepared for your saved forwarders automatically when a supplier sends sizes and weights, and you can make more here. The same details can go to several forwarders, and requests only go to forwarders you've saved. Nothing is sent until the dims are checked and you press Send.</p>
                   <ul className="divide-y divide-slate-100">
                     {forwarders.map((x) => {
                       const pk = picks[x.label] || { on: false, to: '', cc: '' };
@@ -1037,13 +1147,13 @@ function QuoteDraft({ q, canSend, reload, setNotice }) {
   const run = async (fn, ok) => {
     setBusy(true);
     setNotice(null);
-    try { await fn(); if (ok) setNotice({ type: 'success', text: ok }); await reload(); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { await fn(); if (ok) setNotice({ type: 'success', text: ok }); await reload(); } catch (err) { setNotice(errNotice(err)); }
     setBusy(false);
   };
   return (
     <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
       <div className="flex items-center justify-between"><h5 className="text-sm font-bold text-ink">Draft to {q.forwarder_label}</h5><span className="text-xs text-slate-500">Not sent until you click Send</span></div>
-      {!canSend && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">Check the dims above and press <b>Dims checked</b> before this can be sent.</p>}
+      {!canSend && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">Check the sizes above and press <b>Sizes checked</b> before this can be sent.</p>}
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-xs font-semibold text-slate-600">To<input className={`${smallInput} mt-1`} value={d.to_email} onChange={(e) => setD({ ...d, to_email: e.target.value })} /></label>
         <label className="text-xs font-semibold text-slate-600">Cc<input className={`${smallInput} mt-1`} value={d.cc_email} onChange={(e) => setD({ ...d, cc_email: e.target.value })} /></label>
@@ -1068,7 +1178,7 @@ function QuoteRow({ q, lowest, mailEmail, reload, setNotice }) {
     setBusy(true);
     setNotice(null);
     try { await inbox('freight_quote_update', { id: q.id, ...payload }); setNotice({ type: 'success', text: ok }); setEdit(false); await reload(); }
-    catch (err) { setNotice({ type: 'error', text: err.message }); }
+    catch (err) { setNotice(errNotice(err)); }
     setBusy(false);
   };
   const confirmPrice = () => run({ price: q.price, currency: q.currency || '', price_basis: q.price_basis || '', includes: q.includes || '', excludes: q.excludes || '', transit_days: q.transit_days ?? '', valid_until: q.valid_until || '' }, 'Price confirmed.');
@@ -1125,16 +1235,28 @@ function PosView({ selectedId, onOpen, setNotice }) {
   const [busy, setBusy] = useState(false);
 
   const loadList = useCallback(async () => {
-    try { setPos((await inbox('po_list')).pos); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { setPos((await inbox('po_list')).pos); } catch (err) { setNotice(errNotice(err)); }
   }, [setNotice]);
   useEffect(() => { loadList(); }, [loadList]);
   const loadThreads = async (po) => {
-    try { const r = await inbox('po_threads', { po_number: po }); setThreads((t) => ({ ...t, [po]: r.threads })); } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    try { const r = await inbox('po_threads', { po_number: po }); setThreads((t) => ({ ...t, [po]: r.threads })); } catch (err) { setNotice(errNotice(err)); }
   };
   const toggle = async (po) => {
     if (openPo === po) { setOpenPo(null); return; }
     setOpenPo(po);
     if (!threads[po]) await loadThreads(po);
+  };
+  // A polite email to the supplier, written as a suggested reply. It is opened for you to read; nothing is sent.
+  const chase = async (po, kind) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const r = await inbox('po_chase', { po_number: po, kind });
+      setNotice({ type: 'success', text: 'I wrote a suggested email. Read it, change anything you like, then press Send. It has not been sent.' });
+      await loadList();
+      onOpen(r.thread_id);
+    } catch (err) { setNotice(errNotice(err)); }
+    setBusy(false);
   };
   const pull = async (po) => {
     setBusy(true);
@@ -1144,7 +1266,7 @@ function PosView({ selectedId, onOpen, setNotice }) {
       setNotice({ type: 'success', text: `Searched Gmail for ${po}: ${r.found_in_gmail} conversation(s) found, ${r.added} added or updated, ${r.linked} linked to this PO.${r.remaining ? ' There are more: press the button again.' : ''}` });
       await loadThreads(po);
       await loadList();
-    } catch (err) { setNotice({ type: 'error', text: err.message }); }
+    } catch (err) { setNotice(errNotice(err)); }
     setBusy(false);
   };
 
@@ -1183,7 +1305,11 @@ function PosView({ selectedId, onOpen, setNotice }) {
                 ))}
                 {threads[p.po_number] && threads[p.po_number].length === 0 && <p className="py-1 text-xs text-slate-500">No emails mention this PO yet.</p>}
                 {!threads[p.po_number] && <p className="py-1 text-xs text-slate-500">Loading</p>}
-                <button type="button" className={buttonPlain} disabled={busy} onClick={() => pull(p.po_number)}>{busy ? 'Searching' : 'Search Gmail for older emails'}</button>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button type="button" className={buttonPlain} disabled={busy} onClick={() => chase(p.po_number, 'invoice')}>Ask for the invoice</button>
+                  <button type="button" className={buttonPlain} disabled={busy} onClick={() => chase(p.po_number, 'delivery')}>Ask for a delivery date</button>
+                  <button type="button" className={buttonPlain} disabled={busy} onClick={() => pull(p.po_number)}>{busy ? 'Working' : 'Look for older emails'}</button>
+                </div>
               </div>
             )}
           </li>
