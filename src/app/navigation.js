@@ -97,20 +97,35 @@ export const MODULES = [
     ],
   },
   {
-  appId: 'inbox',
-  title: 'Inbox',
-  summary: 'Supplier email sorted by supplier, with replies drafted for you.',
-  icon: Mail,
-  pages: [
-    {
-      path: '/inbox/mail',
-      label: 'Supplier inbox',
-      description: 'Gmail grouped by supplier. Claude says what needs a reply, drafts it and builds your morning to-do. Nothing sends until you click Send.',
-      icon: Inbox,
-      platforms: ['cin7'],
-    },
-  ],
-},
+    appId: 'inbox',
+    title: 'Operations inbox',
+    summary: 'Supplier and forwarder email, sorted for you, with replies written for you to check.',
+    icon: Mail,
+    pages: [
+      {
+        path: '/inbox/mail',
+        label: 'Operations inbox',
+        description: 'Email from suppliers and forwarders. I say what needs a reply, write it for you and build your morning to-do. Nothing is sent until you press Send.',
+        icon: Inbox,
+        platforms: ['cin7'],
+      },
+    ],
+  },
+  {
+    appId: 'sales_inbox',
+    title: 'Sales inbox',
+    summary: 'Customer email from the sales mailbox, sorted, with suggested replies.',
+    icon: Users,
+    pages: [
+      {
+        path: '/sales-inbox/mail',
+        label: 'Sales inbox',
+        description: 'Customer email from the sales mailbox. System notices are set aside, questions get a suggested reply from our stock and prices, and nothing is sent unless an admin switches sending on.',
+        icon: Inbox,
+        platforms: ['cin7'],
+      },
+    ],
+  },
   {
     appId: 'shipping',
     title: 'Shipping',

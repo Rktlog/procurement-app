@@ -24,6 +24,7 @@ const WmsPurchasesPage = lazy(() => import('./pages/WmsPurchasesPage'));
 const WmsDropshipPage = lazy(() => import('./pages/WmsDropshipPage'));
 const WmsAssistantPage = lazy(() => import('./pages/WmsAssistantPage'));
 const InboxPage = lazy(() => import('./pages/InboxPage'));
+const SalesInboxPage = lazy(() => import('./pages/SalesInboxPage'));
 const SalesAssistantPage = lazy(() => import('./pages/SalesAssistantPage'));
 const PurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage'));
 const UserAccessPage = lazy(() => import('./pages/UserAccessPage'));
@@ -74,6 +75,11 @@ function AuthGate() {
         <Route path="inbox" element={<RequireApp appId="inbox" />}>
           <Route index element={<ModuleIndex appId="inbox" />} />
           <Route path="mail" element={<InboxPage />} />
+        </Route>
+
+        <Route path="sales-inbox" element={<RequireApp appId="sales_inbox" />}>
+          <Route index element={<ModuleIndex appId="sales_inbox" />} />
+          <Route path="mail" element={<SalesInboxPage />} />
         </Route>
 
         <Route path="shipping" element={<RequireApp appId="shipping" />}>
