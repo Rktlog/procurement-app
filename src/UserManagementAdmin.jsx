@@ -2,7 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 
 const AVAILABLE_APPS = [
-  { id: 'procurement', label: 'Procurement Hub' },
+  { id: 'procurement', label: 'Procurement Hub (2PRE)' },
+  { id: 'product_search', label: 'Product search' },
+  { id: 'assistant', label: 'Product assistant' },
+  { id: 'inbox', label: 'Operations inbox (2PRE)' },
+  { id: 'sales_inbox', label: 'Sales inbox (Seaga reps)' },
+  { id: 'sales_inbox_view', label: 'Sales inbox, view only (2PRE managers)' },
+  { id: 'preorders', label: 'Customer pre-orders (2PRE managers)' },
   { id: 'shipping', label: 'Shipping & Logistics' },
   { id: 'sales', label: 'Sales & Invoicing' },
   { id: 'wms', label: 'WMS (Orders & Purchasing)' },

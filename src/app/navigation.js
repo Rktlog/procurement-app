@@ -14,10 +14,10 @@ import {
 // `masterOnly` modules are shown to master admins only.
 export const MODULES = [
   {
-    appId: 'procurement',
-    title: 'Procurement',
-    summary: 'Purchase orders, stock lookups and what to reorder next.',
-    icon: Package,
+    appId: 'product_search',
+    title: 'Product search',
+    summary: 'Look up a product: stock, prices and when more is coming.',
+    icon: Search,
     pages: [
       {
         path: '/procurement/search',
@@ -25,6 +25,14 @@ export const MODULES = [
         description: 'Look up a SKU or item name for stock on hand and sales history.',
         icon: Search,
       },
+    ],
+  },
+  {
+    appId: 'procurement',
+    title: 'Procurement',
+    summary: 'Purchase orders, stock lookups and what to reorder next.',
+    icon: Package,
+    pages: [
       {
         path: '/procurement/reorder',
         label: 'Reorder & POs',
@@ -57,6 +65,36 @@ export const MODULES = [
         label: 'Supplier lead time',
         description: 'Set how long each supplier takes to deliver, so reorders land before stock runs out.',
         icon: SlidersHorizontal,
+      },
+    ],
+  },
+  {
+    appId: 'preorders',
+    title: 'Pre-orders',
+    summary: 'What Seaga customers have asked to pre-order, added up by product.',
+    icon: ShoppingCart,
+    pages: [
+      {
+        path: '/preorders/list',
+        label: 'Customer pre-orders',
+        description: 'Products customers want to pre-order, against stock and what is already coming, so you can place the order.',
+        icon: ShoppingCart,
+        platforms: ['cin7'],
+      },
+    ],
+  },
+  {
+    appId: 'assistant',
+    title: 'Product assistant',
+    summary: 'Ask about stock, prices, incoming dates and what sold, in plain English.',
+    icon: Sparkles,
+    pages: [
+      {
+        path: '/assistant/chat',
+        label: 'Product assistant',
+        description: 'Ask about stock, list prices, when stock is coming in and what sold recently. It only looks things up.',
+        icon: Sparkles,
+        platforms: ['cin7'],
       },
     ],
   },
@@ -127,6 +165,21 @@ export const MODULES = [
     ],
   },
   {
+    appId: 'sales_inbox_view',
+    title: 'Sales inbox (view only)',
+    summary: "See what Seaga's sales team is working on. You can look, not reply.",
+    icon: Users,
+    pages: [
+      {
+        path: '/sales-inbox-view/mail',
+        label: 'Sales inbox (view only)',
+        description: 'Customer email from the sales mailbox, including pre-orders. View only: the sales reps contact the customers.',
+        icon: Inbox,
+        platforms: ['cin7'],
+      },
+    ],
+  },
+  {
     appId: 'shipping',
     title: 'Shipping',
     summary: 'Pick, label and manifest AusPost shipments.',
@@ -160,13 +213,6 @@ export const MODULES = [
         description: 'Turn a Shopify draft order into an invoice or quote.',
         icon: FileText,
         platforms: ['shopify'], // works from Shopify draft orders, so Shopify companies only
-      },
-      {
-        path: '/sales/assistant',
-        label: 'Product assistant',
-        description: 'Ask about stock, list prices, when stock is coming in and what sold recently.',
-        icon: Sparkles,
-        platforms: ['cin7'], // reads Cin7/DEAR data, so Seaga only
       },
     ],
   },

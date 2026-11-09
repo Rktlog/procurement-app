@@ -60,6 +60,7 @@ export default function SalesInbox() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
   const [notice, setNotice] = useState(null);
+  const readOnly = status?.mode === 'view'; // a 2PRE manager: look, never reply or change
 
   const loadStatus = useCallback(async () => { try { setStatus(await salesMail('mail_status')); } catch (err) { setNotice(errNotice(err)); } }, []);
   const loadOverview = useCallback(async () => { try { setOverview(await salesMail('sales_overview')); } catch (err) { setNotice(errNotice(err)); } }, []);
@@ -70,6 +71,11 @@ export default function SalesInbox() {
 
   useEffect(() => { loadStatus(); loadOverview(); }, [loadStatus, loadOverview]);
   useEffect(() => { loadThreads(); }, [loadThreads]);
+  // A link such as /sales-inbox-view/mail?thread=... (from the Pre-orders page) opens that email straight away.
+  useEffect(() => {
+    const t = params.get('thread');
+    if (t) { setView('all'); setSelectedId(t); }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (params.get('gmail') === 'connected') { setNotice({ type: 'success', text: 'Gmail is connected for the sales mailbox. Press Get new emails to bring in the latest.' }); loadStatus(); setView('setup'); }
     else if (params.get('gmail_error')) { setNotice({ type: 'error', text: params.get('gmail_error') }); setView('setup'); }
@@ -118,9 +124,13 @@ export default function SalesInbox() {
         <p className="text-sm text-slate-600">
           {status?.connected ? <>Connected to <b>{status.email}</b>{status.last_sync ? <> · last checked {timeAgo(status.last_sync)} ago</> : null}</> : 'Not connected to Gmail yet.'}
         </p>
-        <button type="button" className={buttonPrimary} disabled={busy || !status?.connected} onClick={syncNow}>
-          <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />{busy ? progress || 'Working' : 'Get new emails'}
-        </button>
+        {readOnly
+          ? <span className="rounded-full bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700">View only</span>
+          : (
+            <button type="button" className={buttonPrimary} disabled={busy || !status?.connected} onClick={syncNow}>
+              <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />{busy ? progress || 'Working' : 'Get new emails'}
+            </button>
+          )}
       </div>
       <Notice n={notice} />
 
@@ -134,18 +144,18 @@ export default function SalesInbox() {
           {navBtn('unknown', "Not sure who this is", c.unknown)}
           <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">More</div>
           {navBtn('all', 'All emails', 0)}
-          {navBtn('mine', "I'm handling", c.mine)}
+          {!readOnly && navBtn('mine', "I'm handling", c.mine)}
           {navBtn('customers', 'Customers', 0)}
           {navBtn('automatic', 'Automatic (not read)', c.automatic)}
           {navBtn('archived', 'Archived', c.archived)}
-          {navBtn('setup', 'Setup', 0)}
+          {!readOnly && navBtn('setup', 'Setup', 0)}
         </nav>
 
         {view === 'today' && (
-          <div className="lg:col-span-2"><TodayView status={status} overview={overview} go={pick} /></div>
+          <div className="lg:col-span-2"><TodayView status={status} overview={overview} go={pick} readOnly={readOnly} /></div>
         )}
-        {view === 'customers' && <div className="lg:col-span-2"><CustomersView setNotice={setNotice} status={status} onChanged={refreshAll} /></div>}
-        {view === 'setup' && <div className="lg:col-span-2"><SetupView status={status} reload={loadStatus} setNotice={setNotice} /></div>}
+        {view === 'customers' && <div className="lg:col-span-2"><CustomersView setNotice={setNotice} status={status} onChanged={refreshAll} readOnly={readOnly} /></div>}
+        {view === 'setup' && !readOnly && <div className="lg:col-span-2"><SetupView status={status} reload={loadStatus} setNotice={setNotice} /></div>}
 
         {listMode && (
           <>
@@ -178,7 +188,7 @@ export default function SalesInbox() {
             </section>
             <section aria-label="Email" className={selectedId ? '' : 'hidden lg:block'}>
               {selectedId ? (
-                <ThreadView key={selectedId} id={selectedId} status={status} setNotice={setNotice} onBack={() => setSelectedId(null)} onChanged={refreshAll} />
+                <ThreadView key={selectedId} id={selectedId} status={status} readOnly={readOnly} setNotice={setNotice} onBack={() => setSelectedId(null)} onChanged={refreshAll} />
               ) : (
                 <div className="rounded-xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">Pick an email from the list to read it.</div>
               )}
@@ -191,7 +201,7 @@ export default function SalesInbox() {
 }
 
 // ------------------------------------------------------------------------------ today
-function TodayView({ status, overview, go }) {
+function TodayView({ status, overview, go, readOnly }) {
   if (!overview) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
   const c = overview.counts;
   const hour = Number(new Date().toLocaleString('en-AU', { hour: 'numeric', hour12: false, timeZone: 'Australia/Melbourne' }));
@@ -208,7 +218,8 @@ function TodayView({ status, overview, go }) {
         <h2 className="text-xl font-bold text-ink">{hello}</h2>
         <p className="text-sm text-slate-600">Here is what needs the sales team today.</p>
       </div>
-      {!status?.connected && (
+      {readOnly && <p className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700">This is the sales team's inbox, <b>view only</b>. You can see what customers are asking for, including pre-orders. The reps contact the customers.</p>}
+      {!readOnly && !status?.connected && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
           <div className="text-sm text-amber-950"><b>Connect the sales mailbox first.</b> It takes a minute on the Setup page.</div>
           <button type="button" className={buttonPrimary} onClick={() => go('setup')}>Go to Setup</button>
@@ -223,13 +234,13 @@ function TodayView({ status, overview, go }) {
           </button>
         ))}
       </div>
-      {c.unknown > 0 && (
+      {!readOnly && c.unknown > 0 && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0 text-sm text-amber-950"><b>{c.unknown} emails are from people who aren't saved as customers.</b> <span className="text-xs text-amber-900">I only read emails from saved customers. Open one to save the customer; I'll suggest who it might be.</span></div>
           <button type="button" className={buttonPrimary} onClick={() => go('unknown')}>Look at them</button>
         </div>
       )}
-      <details className="rounded-xl border border-slate-200 bg-white p-4 text-sm">
+      {!readOnly && <details className="rounded-xl border border-slate-200 bg-white p-4 text-sm">
         <summary className="cursor-pointer font-semibold text-blue-700">New here? How this works</summary>
         <ol className="mt-3 list-decimal space-y-2 pl-5 text-slate-700">
           <li>Press <b>Get new emails</b> at the top. It brings in the latest emails from the sales mailbox.</li>
@@ -239,13 +250,13 @@ function TodayView({ status, overview, go }) {
           <li>Press <b>I'll handle this</b> on an email so a colleague doesn't answer it too.</li>
         </ol>
         <p className="mt-3 text-slate-600">Nothing is sent from this screen while it is in drafts-only mode. {overview.send_enabled ? 'Sending is switched on.' : 'An admin can switch sending on under Setup later.'}</p>
-      </details>
+      </details>}
     </div>
   );
 }
 
 // ------------------------------------------------------------------------------ one email
-function ThreadView({ id, status, setNotice, onBack, onChanged }) {
+function ThreadView({ id, status, readOnly, setNotice, onBack, onChanged }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -286,6 +297,7 @@ function ThreadView({ id, status, setNotice, onBack, onChanged }) {
 
   if (!data) return <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">Loading</div>;
   const { thread, messages, draft, customer, sender, suggestions } = data;
+  const preorderLines = data.preorder_lines || [];
   const mailEmail = status?.email;
   const sendOn = status?.settings?.send_enabled === true;
   const menuBtn = 'block w-full rounded-md px-3 py-2 text-left text-sm text-ink hover:bg-slate-100 cursor-pointer disabled:opacity-50';
@@ -333,6 +345,7 @@ function ThreadView({ id, status, setNotice, onBack, onChanged }) {
             {mine && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-700"><Clock size={11} />{mine} is handling it</span>}
           </div>
         </div>
+        {!readOnly && (
         <div className="relative flex shrink-0 flex-wrap items-center justify-end gap-1.5">
           {!mine
             ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => assign(true)}>I'll handle this</button>
@@ -351,9 +364,11 @@ function ThreadView({ id, status, setNotice, onBack, onChanged }) {
             </div>
           )}
         </div>
+        )}
       </div>
+      {readOnly && <p className="mx-3 mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">View only. You can read this email, but the sales rep looks after the customer, so there is no reply or change button here.</p>}
 
-      {!customer && (
+      {!customer && !readOnly && (
         <div className="m-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
           <p><b>This sender isn't saved as a customer yet,</b> so I haven't read this email. Save them and I'll read it, and read their emails from now on.</p>
           {suggestions?.length > 0 && (
@@ -385,6 +400,7 @@ function ThreadView({ id, status, setNotice, onBack, onChanged }) {
         {messages.some((m) => (m.attachments || []).length) && <p className="text-xs text-slate-500">Open the email in Gmail to download attached files.</p>}
       </div>
 
+      {!readOnly && (
       <div className="space-y-3 border-t border-slate-100 p-3">
         {draft ? (
           <>
@@ -420,6 +436,82 @@ function ThreadView({ id, status, setNotice, onBack, onChanged }) {
           </>
         )}
       </div>
+      )}
+      <PreOrderPanel thread={thread} lines={preorderLines} readOnly={readOnly} busy={busy} run={run} reload={load} />
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------------ pre-order
+// What the customer wants, line by line, so a 2PRE manager can place the order. Reps read it from the email and fix it;
+// managers only see it. Every line shows the customer's own words so it can be checked.
+function PreOrderPanel({ thread, lines, readOnly, busy, run, reload }) {
+  const [edits, setEdits] = useState({});
+  const [adding, setAdding] = useState({ product_text: '', sku: '', qty: '', wanted_by: '' });
+  if (readOnly && !lines.length) return null;
+  const val = (l, k) => (edits[l.id]?.[k] ?? (k === 'qty' ? (l.qty ?? '') : (l[k] ?? '')));
+  const set = (l, k, v) => setEdits((e) => ({ ...e, [l.id]: { ...e[l.id], [k]: v } }));
+  const dirty = (l) => !!edits[l.id] && Object.keys(edits[l.id]).length > 0;
+
+  const read = async () => {
+    const r = await run(() => salesMail('extract_preorder', { thread_id: thread.id }),
+      (x) => (x.found ? `I found ${x.found} product${x.found === 1 ? '' : 's'} they want.${x.without_quantity ? ` ${x.without_quantity} had no number, so fill those in.` : ''} Check each against the email.` : "I couldn't find any products they want in this email."));
+    if (r) { setEdits({}); await reload(); }
+  };
+  const save = async (l) => {
+    const r = await run(() => salesMail('save_preorder_line', { id: l.id, thread_id: thread.id, product_text: val(l, 'product_text'), sku: String(val(l, 'sku') || '').trim() || undefined, qty: val(l, 'qty') === '' ? undefined : Number(val(l, 'qty')), wanted_by: val(l, 'wanted_by') || undefined }), 'Saved.');
+    if (r) { setEdits((e) => { const n = { ...e }; delete n[l.id]; return n; }); await reload(); }
+  };
+  const remove = async (l) => { const r = await run(() => salesMail('delete_preorder_line', { id: l.id }), 'Removed.'); if (r) await reload(); };
+  const add = async () => {
+    const r = await run(() => salesMail('save_preorder_line', { thread_id: thread.id, product_text: adding.product_text, sku: adding.sku.trim() || undefined, qty: adding.qty === '' ? undefined : Number(adding.qty), wanted_by: adding.wanted_by || undefined }), 'Added.');
+    if (r) { setAdding({ product_text: '', sku: '', qty: '', wanted_by: '' }); await reload(); }
+  };
+
+  return (
+    <div className="space-y-3 border-t border-slate-100 p-3" aria-label="Pre-order">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-bold text-ink">Pre-order</h3>
+        {!readOnly && <button type="button" className={buttonPlain} disabled={busy} onClick={read}><Sparkles size={14} />{lines.length ? 'Read the email again' : 'Read what they want'}</button>}
+      </div>
+      <p className="text-xs text-slate-500">{readOnly ? 'What the customer asked for. The sales rep keeps this up to date.' : 'I list what the customer asks for, so a 2PRE manager can place the order. Check each line against the email.'}</p>
+      <ul className="space-y-2">
+        {lines.map((l) => (
+          <li key={l.id} className="rounded-lg border border-slate-200 p-2.5">
+            {readOnly ? (
+              <div className="text-sm text-ink">
+                <b>{l.product_name || l.product_text}</b>{l.sku ? <span className="ml-1.5 text-xs text-slate-500">{String(l.sku).trim()}</span> : <span className="ml-1.5 text-xs text-amber-800">not matched to a product</span>}
+                <span className="ml-2">{l.qty != null ? `${l.qty}` : 'no quantity yet'}</span>
+                {l.wanted_by && <span className="ml-2 text-slate-600">by {l.wanted_by}</span>}
+                {l.ordered && <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-semibold text-emerald-800">Ordered{l.po_number ? ` on ${l.po_number}` : ''}</span>}
+              </div>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-[1.4fr_1fr_6rem_9rem_auto]">
+                <input className={`${inputClass} !min-h-[2.25rem]`} value={val(l, 'product_text')} onChange={(e) => set(l, 'product_text', e.target.value)} aria-label="What the customer wants" />
+                <input className={`${inputClass} !min-h-[2.25rem]`} value={val(l, 'sku') || ''} placeholder="Product code" onChange={(e) => set(l, 'sku', e.target.value)} aria-label="Product code" />
+                <input className={`${inputClass} !min-h-[2.25rem]`} type="number" min="0" value={val(l, 'qty')} placeholder="How many" onChange={(e) => set(l, 'qty', e.target.value)} aria-label="How many" />
+                <input className={`${inputClass} !min-h-[2.25rem]`} type="date" value={val(l, 'wanted_by') || ''} onChange={(e) => set(l, 'wanted_by', e.target.value)} aria-label="Wanted by" />
+                <div className="flex gap-1.5">
+                  <button type="button" className={buttonPlain} disabled={busy || !dirty(l)} onClick={() => save(l)}>Save</button>
+                  <button type="button" className={buttonPlain} disabled={busy} aria-label="Remove this line" onClick={() => remove(l)}><Trash2 size={14} /></button>
+                </div>
+              </div>
+            )}
+            {l.sentence && <p className="mt-1.5 text-xs text-slate-500">They wrote: "{l.sentence}"</p>}
+            {!readOnly && !l.sku && <p className="mt-1 text-xs text-amber-800">Not matched to one of our products yet. Type the product code so the totals can be worked out.</p>}
+          </li>
+        ))}
+        {lines.length === 0 && <li className="text-sm text-slate-500">No lines yet. Press <b>Read what they want</b>, or add one below.</li>}
+      </ul>
+      {!readOnly && (
+        <div className="grid gap-2 sm:grid-cols-[1.4fr_1fr_6rem_9rem_auto]">
+          <input className={`${inputClass} !min-h-[2.25rem]`} value={adding.product_text} onChange={(e) => setAdding({ ...adding, product_text: e.target.value })} placeholder="Add a product they want" aria-label="Add a product they want" />
+          <input className={`${inputClass} !min-h-[2.25rem]`} value={adding.sku} onChange={(e) => setAdding({ ...adding, sku: e.target.value })} placeholder="Product code" aria-label="New line product code" />
+          <input className={`${inputClass} !min-h-[2.25rem]`} type="number" min="0" value={adding.qty} onChange={(e) => setAdding({ ...adding, qty: e.target.value })} placeholder="How many" aria-label="New line quantity" />
+          <input className={`${inputClass} !min-h-[2.25rem]`} type="date" value={adding.wanted_by} onChange={(e) => setAdding({ ...adding, wanted_by: e.target.value })} aria-label="New line wanted by" />
+          <button type="button" className={buttonPlain} disabled={busy || !adding.product_text.trim()} onClick={add}>Add</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -442,7 +534,7 @@ function Message({ m }) {
 }
 
 // ------------------------------------------------------------------------------ customers
-function CustomersView({ setNotice, status, onChanged }) {
+function CustomersView({ setNotice, status, onChanged, readOnly }) {
   const [list, setList] = useState(null);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
@@ -468,12 +560,12 @@ function CustomersView({ setNotice, status, onChanged }) {
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
         <h2 className="text-base font-bold text-ink">Customers</h2>
         <p className="text-sm text-slate-600">I only read emails from the addresses saved here. {status?.dear_names_loaded ? 'DEAR customer names are loaded, so I can suggest who a new sender might be.' : 'The DEAR customer names load automatically the first time emails are checked.'}</p>
-        <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+        {!readOnly && <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
           <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder="Customer or company name" aria-label="New customer name" />
           <input className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Their email address" aria-label="New customer email address" />
           <button type="button" className={buttonPrimary} disabled={busy || !name.trim() || !email.trim()}
             onClick={() => run(async () => { await salesMail('save_customer', { name: name.trim(), emails: [email.trim()] }); setName(''); setEmail(''); }, 'Customer saved.')}>Add customer</button>
-        </div>
+        </div>}
       </div>
       <input className={inputClass} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customers or addresses" aria-label="Search customers" />
       <ul className="space-y-2">
@@ -481,22 +573,22 @@ function CustomersView({ setNotice, status, onChanged }) {
           <li key={c.id} className="rounded-xl border border-slate-200 bg-white p-3">
             <div className="flex items-center justify-between gap-2">
               <span className="font-bold text-ink">{c.name}</span>
-              <button type="button" className="cursor-pointer text-xs font-semibold text-red-700 hover:underline" disabled={busy}
-                onClick={() => window.confirm(`Delete ${c.name}? Their emails will go back to "Not sure who this is".`) && run(() => salesMail('delete_customer', { id: c.id }), 'Customer deleted.')}>Delete</button>
+              {!readOnly && <button type="button" className="cursor-pointer text-xs font-semibold text-red-700 hover:underline" disabled={busy}
+                onClick={() => window.confirm(`Delete ${c.name}? Their emails will go back to "Not sure who this is".`) && run(() => salesMail('delete_customer', { id: c.id }), 'Customer deleted.')}>Delete</button>}
             </div>
             <ul className="mt-1.5 flex flex-wrap gap-1.5">
               {c.contacts.map((x) => (
                 <li key={x.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
                   {x.email}
-                  <button type="button" aria-label={`Remove ${x.email}`} className="cursor-pointer text-slate-400 hover:text-red-600" disabled={busy} onClick={() => run(() => salesMail('remove_contact', { id: x.id }))}>×</button>
+                  {!readOnly && <button type="button" aria-label={`Remove ${x.email}`} className="cursor-pointer text-slate-400 hover:text-red-600" disabled={busy} onClick={() => run(() => salesMail('remove_contact', { id: x.id }))}>×</button>}
                 </li>
               ))}
             </ul>
-            <div className="mt-2 flex gap-2">
+            {!readOnly && <div className="mt-2 flex gap-2">
               <input className={`${inputClass} !min-h-[2.25rem]`} value={adding[c.id] || ''} onChange={(e) => setAdding({ ...adding, [c.id]: e.target.value })} placeholder="Add another email address" aria-label={`Add an email address for ${c.name}`} />
               <button type="button" className={buttonPlain} disabled={busy || !(adding[c.id] || '').trim()}
                 onClick={() => run(async () => { await salesMail('add_contact', { customer_id: c.id, email: adding[c.id] }); setAdding({ ...adding, [c.id]: '' }); })}>Add</button>
-            </div>
+            </div>}
           </li>
         ))}
         {shown.length === 0 && <li className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">{list.length ? 'No customers match.' : 'No customers saved yet. Add one above, or open an email from someone new and save them from there.'}</li>}
@@ -538,7 +630,7 @@ function SetupView({ status, reload, setNotice }) {
         ) : (
           <>
             <p className="text-sm text-slate-700">Not connected yet. When you press the button, sign in to Google <b>with the sales@ account</b> and allow it to read and send email.</p>
-            {!status.google_configured && <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">An admin needs to finish the Google set-up first. It is the same one the Operations inbox uses.</p>}
+            {!status.google_configured && <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">An admin needs to finish the Google set-up for the sales mailbox first. The sales@ account is in a different Google workspace from ops@, so it needs its own Google client. The steps are in the install notes.</p>}
             <button type="button" className={buttonPrimary} disabled={busy || !status.google_configured} onClick={connect}>Connect the sales mailbox</button>
           </>
         )}

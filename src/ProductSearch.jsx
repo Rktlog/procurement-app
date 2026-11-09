@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import IncomingBreakdown from './IncomingBreakdown';
+import { useAuth } from './app/AuthContext';
 
 const DEFAULT_PLANNING_MONTHS = 6;
 
@@ -104,6 +105,9 @@ function CollapsibleProductCard({ product, planningMonths }) {
   const [isOpen, setIsOpen] = useState(false);
   const [leadTimeMonths, setLeadTimeMonths] = useState(null);
   const [leadTimeSupplier, setLeadTimeSupplier] = useState(null);
+  // Supplier names are for 2PRE (and admins). Seaga's reps don't see them.
+  const { business, isMasterAdmin } = useAuth();
+  const showSuppliers = isMasterAdmin || business?.id === '2pre';
   // POs that still have stock coming, from the incoming breakdown. null = not loaded or unavailable, so the old display is used.
   const [incoming, setIncoming] = useState(null);
 
@@ -186,7 +190,7 @@ function CollapsibleProductCard({ product, planningMonths }) {
     <div key={idx} className="p-2.5 bg-white rounded-xl border border-slate-200/80 flex justify-between items-center shadow-2xs">
       <div>
         <p className="font-semibold text-slate-800">PO #{po.po_number || 'N/A'}</p>
-        <p className="text-slate-500 text-[11px] font-medium">{po.supplier_name || 'Vendor'}</p>
+        {showSuppliers && <p className="text-slate-500 text-[11px] font-medium">{po.supplier_name || 'Vendor'}</p>}
       </div>
       <div className="text-right">
         <p className="font-bold text-blue-600">+{po.quantity || po.qty || 0} {unitLabel}</p>
@@ -210,7 +214,7 @@ function CollapsibleProductCard({ product, planningMonths }) {
             <h3 className="text-sm font-bold text-slate-900">{product.name}</h3>
             <p className="text-xs text-slate-500">
               {product.brand || 'No Brand'}
-              {(leadTimeSupplier || product.latest_supplier) ? ` • Vendor: ${leadTimeSupplier || product.latest_supplier}` : ''}
+              {showSuppliers && (leadTimeSupplier || product.latest_supplier) ? ` • Vendor: ${leadTimeSupplier || product.latest_supplier}` : ''}
             </p>
           </div>
         </div>

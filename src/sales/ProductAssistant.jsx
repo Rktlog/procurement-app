@@ -27,6 +27,7 @@ export default function ProductAssistant() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [mode, setMode] = useState(null);
   const endRef = useRef(null);
   const inputRef = useRef(null);
   useEffect(() => { endRef.current?.scrollIntoView?.({ block: 'end' }); }, [messages, busy]);
@@ -41,6 +42,7 @@ export default function ProductAssistant() {
     setError(null);
     try {
       const r = await askProductAssistant(next.map((m) => ({ role: m.role, content: m.content })));
+      setMode(r.mode || null);
       setMessages([...next, { role: 'assistant', content: r.reply, used: r.used || [] }]);
     } catch (err) {
       setError(err.message);
@@ -50,6 +52,7 @@ export default function ProductAssistant() {
 
   return (
     <section className="max-w-3xl bg-white border border-slate-200 rounded-xl flex flex-col min-h-[520px]" aria-label="Product assistant">
+      {mode === 'manager' && <p className="border-b border-slate-100 px-4 py-2 text-xs text-slate-600">2PRE view: this also shows suppliers and the last purchase cost.</p>}
       <div className="flex-1 p-4 space-y-4 overflow-y-auto max-h-[600px]" aria-live="polite">
         {messages.length === 0 && (
           <div>

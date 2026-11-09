@@ -25,6 +25,7 @@ const WmsDropshipPage = lazy(() => import('./pages/WmsDropshipPage'));
 const WmsAssistantPage = lazy(() => import('./pages/WmsAssistantPage'));
 const InboxPage = lazy(() => import('./pages/InboxPage'));
 const SalesInboxPage = lazy(() => import('./pages/SalesInboxPage'));
+const PreOrdersPage = lazy(() => import('./pages/PreOrdersPage'));
 const SalesAssistantPage = lazy(() => import('./pages/SalesAssistantPage'));
 const PurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage'));
 const UserAccessPage = lazy(() => import('./pages/UserAccessPage'));
@@ -54,13 +55,16 @@ function AuthGate() {
       <Route element={<AppLayout />}>
         <Route index element={<HomePage />} />
 
+        <Route path="procurement/search" element={<RequireApp appId="product_search" />}>
+          <Route index element={<ProductSearchPage />} />
+        </Route>
+
         <Route path="procurement" element={<RequireApp appId="procurement" />}>
           <Route index element={<ModuleIndex appId="procurement" />} />
           <Route path="purchase-orders" element={<PurchaseOrdersPage />} />
           <Route path="reorder" element={<ReorderPage />} />
           <Route path="urgent" element={<UrgentOrdersPage />} />
           <Route path="longterm" element={<LongtermOrdersPage />} />
-          <Route path="search" element={<ProductSearchPage />} />
           <Route path="settings" element={<ProcurementSettingsPage />} />
         </Route>
 
@@ -82,6 +86,21 @@ function AuthGate() {
           <Route path="mail" element={<SalesInboxPage />} />
         </Route>
 
+        <Route path="sales-inbox-view" element={<RequireApp appId="sales_inbox_view" />}>
+          <Route index element={<ModuleIndex appId="sales_inbox_view" />} />
+          <Route path="mail" element={<SalesInboxPage />} />
+        </Route>
+
+        <Route path="preorders" element={<RequireApp appId="preorders" />}>
+          <Route index element={<ModuleIndex appId="preorders" />} />
+          <Route path="list" element={<PreOrdersPage />} />
+        </Route>
+
+        <Route path="assistant" element={<RequireApp appId="assistant" />}>
+          <Route index element={<ModuleIndex appId="assistant" />} />
+          <Route path="chat" element={<SalesAssistantPage />} />
+        </Route>
+
         <Route path="shipping" element={<RequireApp appId="shipping" />}>
           <Route index element={<ModuleIndex appId="shipping" />} />
           <Route path="pantone" element={<PantoneFulfillmentPage />} />
@@ -91,7 +110,6 @@ function AuthGate() {
         <Route path="sales" element={<RequireApp appId="sales" />}>
           <Route index element={<ModuleIndex appId="sales" />} />
           <Route path="invoice" element={<CreateInvoicePage />} />
-          <Route path="assistant" element={<SalesAssistantPage />} />
         </Route>
 
         <Route path="admin" element={<RequireApp appId="admin" />}>

@@ -14,9 +14,9 @@ const FRIENDLY = [
 const explain = (msg) => { for (const [re, text] of FRIENDLY) if (re.test(msg)) return text; return msg; };
 const fail = (technical) => { const e = new Error(explain(technical)); e.friendly = e.message; e.technical = technical; return e; };
 
-// Calls the Sales inbox function. Errors carry a plain-words message.
-export async function salesMail(action, body = {}) {
-  const { data, error } = await supabase.functions.invoke('seaga-sales-mail', { body: { action, ...body } });
+// Calls the Seaga inbox function. Errors carry a plain-words message.
+export async function inbox(action, body = {}) {
+  const { data, error } = await supabase.functions.invoke('seaga-mail', { body: { action, ...body } });
   if (error) {
     const detail = await error.context?.json?.().catch(() => null);
     throw fail(detail?.error || error.message);
@@ -24,6 +24,8 @@ export async function salesMail(action, body = {}) {
   if (!data?.success) throw fail(data?.error || 'No response from the server.');
   return data;
 }
+
+export { inputClass, buttonPrimary, buttonPlain, fmtDateTime } from '../wms/api';
 
 export const timeAgo = (iso) => {
   if (!iso) return '';
@@ -35,5 +37,3 @@ export const timeAgo = (iso) => {
   const days = Math.round(hrs / 24);
   return days < 14 ? `${days}d` : new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
 };
-
-export const gmailLink = (email, threadId) => `https://mail.google.com/mail/u/${encodeURIComponent(email)}/#all/${threadId}`;
