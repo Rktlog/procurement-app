@@ -1258,6 +1258,20 @@ function PosView({ selectedId, onOpen, setNotice }) {
     } catch (err) { setNotice(errNotice(err)); }
     setBusy(false);
   };
+  // Archive a PO that isn't ours (another company's) or is long finished. Nothing in DEAR changes.
+  const archivePo = async (po, hideSupplier) => {
+    const label = hideSupplier ? `Archive PO ${po.po_number} and hide every purchase order from ${po.supplier_name}, now and in future?` : `Archive PO ${po.po_number}? It disappears from these lists. Nothing changes in DEAR.`;
+    if (!window.confirm(label)) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const r = await inbox('po_archive', { po_numbers: [po.po_number], ignore_supplier: hideSupplier });
+      setNotice({ type: 'success', text: hideSupplier ? `Archived ${r.hidden} purchase order${r.hidden === 1 ? '' : 's'} and hid ${po.supplier_name}. Their future orders stay hidden too.` : `Archived PO ${po.po_number}. You can bring it back on the Procurement purchase orders page, under Archived.` });
+      setOpenPo(null);
+      await loadList();
+    } catch (err) { setNotice(errNotice(err)); }
+    setBusy(false);
+  };
   const pull = async (po) => {
     setBusy(true);
     setNotice(null);
@@ -1309,6 +1323,11 @@ function PosView({ selectedId, onOpen, setNotice }) {
                   <button type="button" className={buttonPlain} disabled={busy} onClick={() => chase(p.po_number, 'invoice')}>Ask for the invoice</button>
                   <button type="button" className={buttonPlain} disabled={busy} onClick={() => chase(p.po_number, 'delivery')}>Ask for a delivery date</button>
                   <button type="button" className={buttonPlain} disabled={busy} onClick={() => pull(p.po_number)}>{busy ? 'Working' : 'Look for older emails'}</button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-2">
+                  <span className="text-xs text-slate-500">Not ours, or long finished?</span>
+                  <button type="button" className={buttonPlain} disabled={busy} onClick={() => archivePo(p, false)}>Archive this PO</button>
+                  {p.supplier_name && <button type="button" className={buttonPlain} disabled={busy} onClick={() => archivePo(p, true)}>Archive and hide everything from {p.supplier_name}</button>}
                 </div>
               </div>
             )}

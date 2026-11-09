@@ -20,7 +20,8 @@ const stateOf = (p) => {
   const waiting = Number(p.confirmed_qty) > 0;
   return { missing, waiting, receivedMissing: !missing && !waiting && !p.is_open, fix: Array.isArray(p.cleanup) && p.cleanup.length > 0 };
 };
-const FILTERS = [['all', 'Everything'], ['missing', 'Missing invoice'], ['waiting', 'Waiting for delivery'], ['received', 'Received, no invoice'], ['fix', 'Fix in DEAR']];
+const FILTERS = [['all', 'Everything'], ['missing', 'Missing invoice'], ['waiting', 'Waiting for delivery'], ['received', 'Received, no invoice'], ['fix', 'Fix in DEAR'], ['archived', 'Archived']];
+const sameSupplier = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 
 const Chip = ({ tone, children }) => <span className={`inline-block rounded-full px-2 py-0.5 text-[0.7rem] font-semibold ${tone}`}>{children}</span>;
 
@@ -53,6 +54,7 @@ export default function PurchaseOrders() {
   const [open, setOpen] = useState(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);
+  const [archived, setArchived] = useState(null); // { pos, suppliers } once the Archived list has been opened
   const today = todayMelb();
 
   useEffect(() => {
@@ -74,19 +76,63 @@ export default function PurchaseOrders() {
     setBusy(false);
   };
 
+  useEffect(() => {
+    if (filter !== 'archived' || archived) return;
+    inbox('po_archived_list').then((r) => setArchived({ pos: r.pos, suppliers: r.suppliers })).catch((err) => { setNote({ type: 'error', text: err.friendly || err.message }); setArchived({ pos: [], suppliers: [] }); });
+  }, [filter, archived]);
+
+  // Archive a PO that isn't ours (another company's) or is long finished. Nothing in DEAR changes. "Hide supplier" also
+  // keeps that supplier's future POs away.
+  const archive = async (po, hideSupplier) => {
+    const label = hideSupplier ? `Archive PO ${po.po_number} and hide every purchase order from ${po.supplier_name}, now and in future?` : `Archive PO ${po.po_number}? It disappears from these lists. Nothing changes in DEAR.`;
+    if (!window.confirm(label)) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await inbox('po_archive', { po_numbers: [po.po_number], ignore_supplier: hideSupplier });
+      setRows((cur) => (cur || []).filter((x) => x.po_number !== po.po_number && !(hideSupplier && sameSupplier(x.supplier_name, po.supplier_name))));
+      setOpen(null);
+      setArchived(null);
+      setNote({ type: 'success', text: hideSupplier ? `Archived ${r.hidden} purchase order${r.hidden === 1 ? '' : 's'} and hid ${po.supplier_name}. Their future orders stay hidden too.` : `Archived PO ${po.po_number}.` });
+    } catch (err) {
+      setNote({ type: 'error', text: err.friendly || err.message });
+    }
+    setBusy(false);
+  };
+  const restore = async (numbers) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      await inbox('po_unarchive', { po_numbers: numbers });
+      setArchived(null);
+      setNote({ type: 'success', text: 'Restored. It comes back on the list the next time the orders refresh from DEAR, within about 10 minutes.' });
+    } catch (err) { setNote({ type: 'error', text: err.friendly || err.message }); }
+    setBusy(false);
+  };
+  const showSupplier = async (key) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      await inbox('po_show_supplier', { supplier_key: key });
+      setArchived(null);
+      setNote({ type: 'success', text: 'This supplier is no longer hidden. Its orders come back within about 10 minutes.' });
+    } catch (err) { setNote({ type: 'error', text: err.friendly || err.message }); }
+    setBusy(false);
+  };
+
   const view = useMemo(() => {
     const list = (rows || []).map((p) => ({ ...p, ...stateOf(p), invoices: Array.isArray(p.invoices) ? p.invoices : [] }));
     const counts = {
       all: list.length, missing: list.filter((p) => p.missing).length, waiting: list.filter((p) => p.waiting).length,
-      received: list.filter((p) => p.receivedMissing).length, fix: list.filter((p) => p.fix).length,
+      received: list.filter((p) => p.receivedMissing).length, fix: list.filter((p) => p.fix).length, archived: archived ? archived.pos.length : null,
     };
     const waitingValue = new Map();
     for (const p of list) for (const i of p.invoices) if (!i.all_received && i.amount != null) waitingValue.set(i.currency || 'No currency recorded', (waitingValue.get(i.currency || 'No currency recorded') || 0) + Number(i.amount));
     const term = q.trim().toLowerCase();
-    const shown = list.filter((p) => (filter === 'all' || (filter === 'missing' && p.missing) || (filter === 'waiting' && p.waiting) || (filter === 'received' && p.receivedMissing) || (filter === 'fix' && p.fix))
+    const shown = filter === 'archived' ? [] : list.filter((p) => (filter === 'all' || (filter === 'missing' && p.missing) || (filter === 'waiting' && p.waiting) || (filter === 'received' && p.receivedMissing) || (filter === 'fix' && p.fix))
       && (!term || `${p.po_number} ${p.supplier_name || ''}`.toLowerCase().includes(term)));
     return { shown, counts, waitingValue: [...waitingValue.entries()] };
-  }, [rows, filter, q]);
+  }, [rows, filter, q, archived]);
 
   if (rows === null) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
 
@@ -114,7 +160,7 @@ export default function PurchaseOrders() {
         {FILTERS.map(([id, label]) => (
           <button key={id} type="button" onClick={() => setFilter(id)}
             className={`rounded-full px-3 py-1.5 text-sm font-semibold cursor-pointer ${filter === id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
-            {label} ({view.counts[id]})
+            {label}{view.counts[id] != null ? ` (${view.counts[id]})` : ''}
           </button>
         ))}
         <input className="ml-auto min-h-[2.5rem] w-64 rounded-md border border-slate-300 px-3 text-sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by PO or supplier" aria-label="Search purchase orders" />
@@ -127,7 +173,40 @@ export default function PurchaseOrders() {
         </p>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      {filter === 'archived' && (
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">Orders you archived (for example another company's, or long finished). They are hidden from every list and from the incoming dates. Nothing in DEAR was changed.</p>
+          {!archived && <p className="text-sm text-slate-500">Loading</p>}
+          {archived && archived.suppliers.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-white p-3">
+              <h3 className="text-sm font-bold text-ink">Suppliers you chose to hide</h3>
+              <ul className="mt-1 divide-y divide-slate-100">
+                {archived.suppliers.map((sup) => (
+                  <li key={sup.supplier_key} className="flex items-center justify-between gap-2 py-1.5 text-sm">
+                    <span>{sup.supplier_name}</span>
+                    <button type="button" disabled={busy} onClick={() => window.confirm(`Show ${sup.supplier_name}'s purchase orders again?`) && showSupplier(sup.supplier_key)} className="cursor-pointer text-xs font-semibold text-blue-700 hover:underline">Show this supplier again</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {archived && (
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <ul className="divide-y divide-slate-100">
+                {archived.pos.map((x) => (
+                  <li key={x.po_number} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                    <span className="min-w-0"><span className="block text-sm font-bold text-ink">PO {x.po_number}</span><span className="block truncate text-xs text-slate-600">{x.supplier_name || 'Supplier'} · archived {fmtDay(String(x.archived_at).slice(0, 10))}</span></span>
+                    <button type="button" disabled={busy} onClick={() => restore([x.po_number])} className="min-h-[2.25rem] rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-ink hover:bg-slate-50 cursor-pointer disabled:opacity-60">Restore</button>
+                  </li>
+                ))}
+                {archived.pos.length === 0 && <li className="p-8 text-center text-sm text-slate-500">Nothing is archived.</li>}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {filter !== 'archived' && <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="hidden grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_minmax(0,1.6fr)_minmax(0,1fr)] gap-3 border-b border-slate-100 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500 md:grid">
           <span>Purchase order</span><span>Expected delivery</span><span>Where it's up to</span><span className="text-right">Order value</span>
         </div>
@@ -181,6 +260,11 @@ export default function PurchaseOrders() {
                       {(p.waiting || p.missing) && <button type="button" disabled={busy} onClick={() => chase(p.po_number, 'delivery')} className="min-h-[2.5rem] rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-ink hover:bg-slate-50 cursor-pointer disabled:opacity-60">Write to the supplier about the delivery date</button>}
                     </div>
                     {(p.missing || p.waiting) && <p className="text-xs text-slate-500">This writes a suggested email in your Inbox for you to read and change. Nothing is sent until you press Send.</p>}
+                    <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-2">
+                      <span className="text-xs text-slate-500">Not ours, or long finished?</span>
+                      <button type="button" disabled={busy} onClick={() => archive(p, false)} className="min-h-[2.25rem] rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-ink hover:bg-slate-50 cursor-pointer disabled:opacity-60">Archive this PO</button>
+                      {p.supplier_name && <button type="button" disabled={busy} onClick={() => archive(p, true)} className="min-h-[2.25rem] rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-ink hover:bg-slate-50 cursor-pointer disabled:opacity-60">Archive and hide everything from {p.supplier_name}</button>}
+                    </div>
                   </div>
                 )}
               </li>
@@ -188,7 +272,7 @@ export default function PurchaseOrders() {
           })}
           {view.shown.length === 0 && <li className="p-8 text-center text-sm text-slate-500">{rows.length === 0 && !error ? 'No purchase orders have been read from DEAR yet.' : 'No purchase orders match.'}</li>}
         </ul>
-      </div>
+      </div>}
     </div>
   );
 }
