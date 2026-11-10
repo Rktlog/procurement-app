@@ -26,6 +26,8 @@ const WmsAssistantPage = lazy(() => import('./pages/WmsAssistantPage'));
 const InboxPage = lazy(() => import('./pages/InboxPage'));
 const SalesInboxPage = lazy(() => import('./pages/SalesInboxPage'));
 const PreOrdersPage = lazy(() => import('./pages/PreOrdersPage'));
+const WatchReportPage = lazy(() => import('./pages/WatchReportPage'));
+const PoToDearPage = lazy(() => import('./pages/PoToDearPage'));
 const SalesAssistantPage = lazy(() => import('./pages/SalesAssistantPage'));
 const PurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage'));
 const UserAccessPage = lazy(() => import('./pages/UserAccessPage'));
@@ -99,6 +101,12 @@ function AuthGate() {
         <Route path="assistant" element={<RequireApp appId="assistant" />}>
           <Route index element={<ModuleIndex appId="assistant" />} />
           <Route path="chat" element={<SalesAssistantPage />} />
+        </Route>
+
+        <Route path="sales-agent" element={<RequireApp appId="sales_agent" />}>
+          <Route index element={<ModuleIndex appId="sales_agent" />} />
+          <Route path="watch" element={<WatchReportPage />} />
+          <Route path="po" element={<PoToDearPage />} />
         </Route>
 
         <Route path="shipping" element={<RequireApp appId="shipping" />}>

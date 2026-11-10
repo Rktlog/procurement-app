@@ -180,6 +180,28 @@ export const MODULES = [
     ],
   },
   {
+    appId: 'sales_agent',
+    title: 'Sales agent',
+    summary: 'Watch report and PO to DEAR: what lands in sales@, and customer POs read and checked.',
+    icon: Sparkles,
+    pages: [
+      {
+        path: '/sales-agent/watch',
+        label: 'Watch report',
+        description: 'What lands in sales@, by job type, and how well the practice replies match what staff did.',
+        icon: FileText,
+        platforms: ['cin7'],
+      },
+      {
+        path: '/sales-agent/po',
+        label: 'PO to DEAR',
+        description: 'JC Gilmore purchase orders read from sales@, checked, and compared with what staff keyed. Nothing is written to DEAR.',
+        icon: Receipt,
+        platforms: ['cin7'],
+      },
+    ],
+  },
+  {
     appId: 'shipping',
     title: 'Shipping',
     summary: 'Pick, label and manifest AusPost shipments.',

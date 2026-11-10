@@ -136,11 +136,12 @@ export default function SalesInbox() {
 
       <div className="grid gap-3 lg:grid-cols-[14rem_minmax(0,22rem)_minmax(0,1fr)]">
         <nav aria-label="Sales inbox menu" className={`rounded-xl border border-slate-200 bg-white p-2 space-y-0.5 ${selectedId ? 'hidden lg:block' : ''}`}>
-          {navBtn('today', 'Today', overview?.drafts_waiting || 0)}
+          {navBtn('today', 'Today', 0)}
           {navBtn('question', 'Questions to answer', c.question)}
           {navBtn('order', 'Orders to enter', c.order)}
           {navBtn('delivery', 'Deliveries to chase', c.delivery)}
           {navBtn('other', 'Other', c.other)}
+          {!readOnly && navBtn('drafts', 'Drafts', overview?.drafts_waiting || 0)}
           {navBtn('unknown', "Not sure who this is", c.unknown)}
           <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">More</div>
           {navBtn('all', 'All emails', 0)}
@@ -154,6 +155,7 @@ export default function SalesInbox() {
         {view === 'today' && (
           <div className="lg:col-span-2"><TodayView status={status} overview={overview} go={pick} readOnly={readOnly} /></div>
         )}
+        {view === 'drafts' && !readOnly && <div className="lg:col-span-2"><DraftsView status={status} setNotice={setNotice} onOpen={(id) => { setView('all'); setSelectedId(id); }} onChanged={refreshAll} /></div>}
         {view === 'customers' && <div className="lg:col-span-2"><CustomersView setNotice={setNotice} status={status} onChanged={refreshAll} readOnly={readOnly} /></div>}
         {view === 'setup' && !readOnly && <div className="lg:col-span-2"><SetupView status={status} reload={loadStatus} setNotice={setNotice} /></div>}
 
@@ -249,7 +251,7 @@ function TodayView({ status, overview, go, readOnly }) {
           <li>An email from someone new? <b>Save them as a customer</b> so I can read their emails from then on.</li>
           <li>Press <b>I'll handle this</b> on an email so a colleague doesn't answer it too.</li>
         </ol>
-        <p className="mt-3 text-slate-600">Nothing is sent from this screen while it is in drafts-only mode. {overview.send_enabled ? 'Sending is switched on.' : 'An admin can switch sending on under Setup later.'}</p>
+        <p className="mt-3 text-slate-600">Nothing is sent from this screen for now. Sending is locked, and an admin unlocks it later.</p>
       </details>}
     </div>
   );
@@ -299,7 +301,8 @@ function ThreadView({ id, status, readOnly, setNotice, onBack, onChanged }) {
   const { thread, messages, draft, customer, sender, suggestions } = data;
   const preorderLines = data.preorder_lines || [];
   const mailEmail = status?.email;
-  const sendOn = status?.settings?.send_enabled === true;
+  const locked = status?.sending_locked !== false; // locked on the server until an admin unlocks it (also the safe default)
+  const sendOn = status?.settings?.send_enabled === true && !locked;
   const menuBtn = 'block w-full rounded-md px-3 py-2 text-left text-sm text-ink hover:bg-slate-100 cursor-pointer disabled:opacity-50';
   const latest = messages.slice(-2);
   const earlier = messages.slice(0, -2);
@@ -324,6 +327,7 @@ function ThreadView({ id, status, readOnly, setNotice, onBack, onChanged }) {
     if (r) { onChanged(); if (archived) onBack(); else await load(); }
   };
   const saveDraft = async () => { const r = await run(() => salesMail('save_draft', { id: draft.id, body, subject }), 'Saved.'); if (r) await load(); };
+  const markSent = async () => { const r = await run(() => salesMail('mark_draft_sent', { id: draft.id }), 'Marked as sent. It is now waiting for the customer.'); if (r) { await load(); onChanged(); } };
   const discard = async () => { const r = await run(() => salesMail('discard_draft', { id: draft.id }), 'Discarded.'); if (r) { await load(); onChanged(); } };
   const copy = async () => { const ok = await copyText(body); setCopied(ok); if (!ok) setNotice({ type: 'error', text: "Couldn't copy. Select the text and press Ctrl+C." }); setTimeout(() => setCopied(false), 4000); };
   const send = async () => {
@@ -370,7 +374,7 @@ function ThreadView({ id, status, readOnly, setNotice, onBack, onChanged }) {
 
       {!customer && !readOnly && (
         <div className="m-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
-          <p><b>This sender isn't saved as a customer yet,</b> so I haven't read this email. Save them and I'll read it, and read their emails from now on.</p>
+          <p><b>This sender isn't saved as a customer yet,</b> so I haven't written a summary or a reply for this email. Save them and I will, and I'll do the same for their emails from now on.</p>
           {suggestions?.length > 0 && (
             <div className="mt-2">
               <p className="text-xs text-amber-900">Could this be one of your DEAR customers? Pick one only if you're sure.</p>
@@ -418,6 +422,7 @@ function ThreadView({ id, status, readOnly, setNotice, onBack, onChanged }) {
               {thread.gmail_thread_id && mailEmail && <a className={buttonPlain} href={gmailLink(mailEmail, thread.gmail_thread_id)} target="_blank" rel="noopener noreferrer">Open in Gmail</a>}
               <button type="button" className={buttonPlain} disabled={busy || (body === draft.body && subject === draft.subject)} onClick={saveDraft}>Save my changes</button>
               {sendOn && <button type="button" className={buttonPrimary} disabled={busy || draft.needs_check} onClick={send}>Send</button>}
+              {!sendOn && <button type="button" className={buttonPlain} disabled={busy || draft.needs_check} onClick={markSent}>I've sent it</button>}
               <button type="button" className={buttonPlain} disabled={busy} onClick={discard}><Trash2 size={14} />Discard</button>
             </div>
             <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -629,7 +634,7 @@ function SetupView({ status, reload, setNotice }) {
           </>
         ) : (
           <>
-            <p className="text-sm text-slate-700">Not connected yet. When you press the button, sign in to Google <b>with the sales@ account</b> and allow it to read and send email.</p>
+            <p className="text-sm text-slate-700">Not connected yet. When you press the button, sign in to Google <b>with the sales@ account</b>. It asks to <b>read</b> email only; it can't send.</p>
             {!status.google_configured && <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">An admin needs to finish the Google set-up for the sales mailbox first. The sales@ account is in a different Google workspace from ops@, so it needs its own Google client. The steps are in the install notes.</p>}
             <button type="button" className={buttonPrimary} disabled={busy || !status.google_configured} onClick={connect}>Connect the sales mailbox</button>
           </>
@@ -652,11 +657,78 @@ function SetupView({ status, reload, setNotice }) {
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
         <h2 className="text-base font-bold text-ink">Sending</h2>
-        <p className="text-sm text-slate-700">{status.settings.send_enabled ? 'Sending is switched on. A Send button appears on suggested replies, and nothing goes out until someone presses it.' : 'Sending is switched off. Suggested replies are drafts: copy them into Gmail and send them from there.'}</p>
-        {status.can_change_sending
-          ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => window.confirm(status.settings.send_enabled ? 'Switch sending off? Replies go back to being copied into Gmail.' : 'Switch sending on? Staff will be able to send replies from this screen. Each one still needs a person to press Send.') && run(() => salesMail('save_mail_settings', { send_enabled: !status.settings.send_enabled }), status.settings.send_enabled ? 'Sending is off.' : 'Sending is on.')}>{status.settings.send_enabled ? 'Switch sending off' : 'Switch sending on'}</button>
-          : <p className="text-xs text-slate-500">Only an admin can change this.</p>}
+        {status.sending_locked !== false ? (
+          <p className="text-sm text-slate-700">Sending is <b>locked</b>, so nothing can be sent from here. Suggested replies are drafts: copy them into Gmail and send them from there, then press <b>I've sent it</b>. An admin unlocks sending later, in the server settings.</p>
+        ) : (
+          <>
+            <p className="text-sm text-slate-700">{status.settings.send_enabled ? 'Sending is switched on. A Send button appears on suggested replies, and nothing goes out until someone presses it.' : 'Sending is switched off. Suggested replies are drafts: copy them into Gmail and send them from there.'}</p>
+            {status.can_change_sending
+              ? <button type="button" className={buttonPlain} disabled={busy} onClick={() => window.confirm(status.settings.send_enabled ? 'Switch sending off? Replies go back to being copied into Gmail.' : 'Switch sending on? Staff will be able to send replies from this screen. Each one still needs a person to press Send.') && run(() => salesMail('save_mail_settings', { send_enabled: !status.settings.send_enabled }), status.settings.send_enabled ? 'Sending is off.' : 'Sending is on.')}>{status.settings.send_enabled ? 'Switch sending off' : 'Switch sending on'}</button>
+              : <p className="text-xs text-slate-500">Only an admin can change this.</p>}
+          </>
+        )}
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------------ drafts
+// Every saved suggested reply in one place. Nothing here is sent by itself.
+function DraftsView({ status, setNotice, onOpen, onChanged }) {
+  const locked = status?.sending_locked !== false;
+  const [drafts, setDrafts] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState('');
+  const load = useCallback(async () => {
+    try { setDrafts((await salesMail('list_drafts')).drafts); } catch (err) { setNotice(errNotice(err)); setDrafts([]); }
+  }, [setNotice]);
+  useEffect(() => { load(); }, [load]);
+  const act = async (fn, ok) => {
+    setBusy(true);
+    setNotice(null);
+    try { await fn(); if (ok) setNotice({ type: 'success', text: ok }); await load(); onChanged(); } catch (err) { setNotice(errNotice(err)); }
+    setBusy(false);
+  };
+  const copy = async (d) => {
+    const ok = await copyText(d.body);
+    setCopied(ok ? d.id : '');
+    setTimeout(() => setCopied(''), 3000);
+    if (!ok) setNotice({ type: 'error', text: "Couldn't copy. Select the text and press Ctrl+C." });
+  };
+  if (!drafts) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div>
+        <h2 className="text-xl font-bold text-ink">Drafts</h2>
+        <p className="text-sm text-slate-600">Every suggested reply I've written that hasn't gone out. {locked ? "Sending is switched off for now: copy a reply, send it from Gmail, then press I've sent it." : 'Nothing is sent until you open it and press Send.'}</p>
+      </div>
+      {drafts.length === 0 && <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">No drafts waiting.</p>}
+      <ul className="space-y-2">
+        {drafts.map((d) => (
+          <li key={d.id} className="rounded-xl border border-slate-200 bg-white p-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm font-bold text-ink">{d.customer_name || d.to_email}</div>
+                <div className="break-words text-xs text-slate-600">{d.thread_subject || d.subject}</div>
+                <div className="mt-0.5 text-xs text-slate-500">To: {d.to_email} · {timeAgo(d.updated_at)} ago{d.edited ? ' · edited by you' : ''}</div>
+              </div>
+              {d.needs_check && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[0.7rem] font-semibold text-amber-800">Needs checking</span>}
+            </div>
+            {d.note && <p className="mt-1.5 text-xs text-violet-900">Note: {d.note}</p>}
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer font-semibold text-blue-700">Read the reply</summary>
+              <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-md bg-slate-50 p-2.5 font-sans text-sm text-ink">{d.body}</pre>
+            </details>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" className={buttonPlain} disabled={busy} onClick={() => onOpen(d.thread_id)}>Open the email</button>
+              {locked && <button type="button" className={buttonPlain} disabled={busy || d.needs_check} onClick={() => copy(d)}>{copied === d.id ? 'Copied' : 'Copy reply'}</button>}
+              {locked && <button type="button" className={buttonPlain} disabled={busy || d.needs_check} onClick={() => act(() => salesMail('mark_draft_sent', { id: d.id }), 'Marked as sent.')}>I've sent it</button>}
+              <button type="button" className={buttonPlain} disabled={busy} onClick={() => window.confirm('Discard this draft?') && act(() => salesMail('discard_draft', { id: d.id }), 'Draft discarded.')}><Trash2 size={14} />Discard</button>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

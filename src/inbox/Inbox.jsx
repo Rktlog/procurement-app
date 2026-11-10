@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { RefreshCw, Send, Check, Paperclip, Sparkles, ArrowLeft, Trash2, Download, Clock, ExternalLink } from 'lucide-react';
 import { inbox, inputClass, buttonPrimary, buttonPlain, fmtDateTime, timeAgo } from './api';
@@ -24,6 +24,22 @@ const isCin7Supplier = (name, suppliers) => suppliers.some((x) => nameKey(x.name
 const fmtDay = (d) => (d ? new Date(`${d}T00:00:00Z`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : 'No date');
 
 const FILTERS = [['attention', 'Needs your reply'], ['waiting', 'Waiting for the supplier'], ['fyi', 'For your information'], ['done', 'Finished'], ['', 'Everything']];
+// Sending is locked on the server until an admin unlocks it. true = locked, which is also the safe default until the server answers.
+const SendingLock = createContext(true);
+const copyText = async (text) => {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch (_e) { /* fall back below */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  return ok;
+};
 const errNotice = (err) => ({ type: 'error', text: err.friendly || err.message, detail: err.technical || null });
 
 const Pill = ({ cat }) => {
@@ -68,7 +84,7 @@ export default function Inbox() {
     try { setOverview(await inbox('inbox_overview')); } catch (err) { setNotice(errNotice(err)); }
   }, []);
   const loadThreads = useCallback(async () => {
-    if (['today', 'settings', 'freight', 'pos'].includes(view)) return;
+    if (['today', 'settings', 'freight', 'pos', 'drafts'].includes(view)) return;
     try { setThreads((await inbox('list_threads', { group: view, category: filter })).threads); }
     catch (err) { setNotice(errNotice(err)); }
   }, [view, filter]);
@@ -163,6 +179,7 @@ export default function Inbox() {
   if (!mail) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
 
   return (
+    <SendingLock.Provider value={mail?.sending_locked !== false}>
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className={buttonPrimary} disabled={busy || !mail.connected} onClick={syncNow}>
@@ -181,6 +198,7 @@ export default function Inbox() {
           {navBtn('today', 'Today', 0, overview?.drafts_waiting ? `${overview.drafts_waiting} replies ready` : '')}
           {navBtn('all', 'All emails', totalNeeds)}
           {navBtn('pos', 'Purchase orders', 0, overview?.po_count ? String(overview.po_count) : '')}
+          {navBtn('drafts', 'Drafts', 0, (overview?.drafts_waiting || 0) + (overview?.quote_drafts || 0) ? String((overview?.drafts_waiting || 0) + (overview?.quote_drafts || 0)) : '')}
           {navBtn('freight', 'Freight quotes', 0, overview?.freight_open ? `${overview.freight_open} open` : '')}
           {sup.length > 0 && <div className="px-2.5 pt-3 pb-1 text-[0.7rem] font-bold uppercase tracking-wide text-slate-400">Suppliers</div>}
           {sup.map((g) => navBtn(g.key, g.label, g.needs, g.waiting ? `${g.waiting} waiting` : ''))}
@@ -195,7 +213,9 @@ export default function Inbox() {
         </nav>
 
         {/* ----------------------------------------------- middle and right */}
-        {view === 'pos' ? (
+        {view === 'drafts' ? (
+          <div className="lg:col-span-2"><DraftsView onOpen={(id) => { setView('all'); setFilter(''); setSelectedId(id); }} onFreight={openFreight} setNotice={setNotice} onChanged={loadOverview} /></div>
+        ) : view === 'pos' ? (
           <>
             <section aria-label="Purchase orders" className={`rounded-xl border border-slate-200 bg-white ${selectedId ? 'hidden lg:block' : ''}`}>
               <PosView selectedId={selectedId} onOpen={setSelectedId} setNotice={setNotice} />
@@ -285,6 +305,7 @@ export default function Inbox() {
         )}
       </div>
     </div>
+    </SendingLock.Provider>
   );
 }
 
@@ -374,7 +395,7 @@ function TodayView({ go, overview, reload, onOpen, connected, mail, setNotice, u
         <summary className="cursor-pointer font-semibold text-blue-700">New here? How this works</summary>
         <ol className="mt-3 list-decimal space-y-2 pl-5 text-slate-700">
           <li>Press <b>Get new emails</b> at the top. It brings in your latest supplier emails.</li>
-          <li>When an email needs an answer, I write a suggested reply. Open it, read it, change anything you like, then press <b>Send</b>. <b>Nothing is ever sent unless you press Send.</b></li>
+          <li>When an email needs an answer, I write a suggested reply. Open it, read it and change anything you like, then <b>copy it into Gmail</b> and send it from there. <b>Nothing is sent from this screen for now.</b></li>
           <li>Don't need an email? Press <b>More</b> on it, then <b>Archive</b>, or ask me to <b>remind you later</b>.</li>
           <li>When a supplier sends box sizes and weights, open <b>Freight quotes</b> to ask the forwarders for a price.</li>
           <li>Under <b>Purchase orders</b> you can see each order and every email about it.</li>
@@ -394,6 +415,8 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
   const [poInput, setPoInput] = useState('');
   const [busyFile, setBusyFile] = useState(null);
   const [menu, setMenu] = useState(false);
+  const locked = useContext(SendingLock);
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
     setData(null);
@@ -425,6 +448,8 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
     const r = await run(() => inbox('send_draft', { id: draft.id, to_email: draft.to_email, cc_email: draft.cc_email || '', subject: draft.subject, body: draft.body }), 'Sent.');
     if (r) { setDraft(null); await load(); onChanged(); }
   };
+  const copyDraft = async () => { const ok = await copyText(draft.body); setCopied(ok); if (!ok) setNotice({ type: 'error', text: "Couldn't copy. Select the text and press Ctrl+C." }); setTimeout(() => setCopied(false), 4000); };
+  const markSent = async () => { const r = await run(() => inbox('mark_draft_sent', { id: draft.id }), 'Marked as sent. It is now waiting for their answer.'); if (r) { setDraft(null); await load(); onChanged(); } };
   const discard = async () => { const r = await run(() => inbox('discard_draft', { id: draft.id }), 'Draft discarded.'); if (r) { setDraft(null); onChanged(); } };
   const makeFreight = async () => {
     const r = await run(() => inbox('freight_extract', { thread_id: thread.id }));
@@ -627,7 +652,14 @@ function ThreadView({ id, mailEmail, onFreight, onBack, onChanged, setNotice }) 
               <textarea aria-label="Email body" className="w-full min-h-[14rem] rounded-md border border-slate-300 p-2.5 text-sm focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/20"
                 value={draft.body} onChange={(e) => setDraftField('body', e.target.value)} />
               <div className="flex flex-wrap gap-2">
-                <button type="button" className={buttonPrimary} disabled={busy || hasPlaceholder} onClick={send}><Send size={14} />Send</button>
+                {locked ? (
+                  <>
+                    <button type="button" className={buttonPrimary} disabled={busy || hasPlaceholder} onClick={copyDraft}>{copied ? 'Copied' : 'Copy email'}</button>
+                    <button type="button" className={buttonPlain} disabled={busy || hasPlaceholder} onClick={markSent}>I've sent it</button>
+                  </>
+                ) : (
+                  <button type="button" className={buttonPrimary} disabled={busy || hasPlaceholder} onClick={send}><Send size={14} />Send</button>
+                )}
                 <button type="button" className={buttonPlain} disabled={busy} onClick={save}>Save changes</button>
                 <button type="button" className={buttonPlain} disabled={busy} onClick={discard}>Discard</button>
               </div>
@@ -1142,6 +1174,8 @@ function PoCard({ req, quotes, forwarders, mailEmail, defaultOpen, reload, setNo
 }
 
 function QuoteDraft({ q, canSend, reload, setNotice }) {
+  const locked = useContext(SendingLock);
+  const [copied, setCopied] = useState('');
   const [d, setD] = useState({ to_email: q.to_email, cc_email: q.cc_email || '', subject: q.subject, body: q.body });
   const [busy, setBusy] = useState(false);
   const run = async (fn, ok) => {
@@ -1152,7 +1186,7 @@ function QuoteDraft({ q, canSend, reload, setNotice }) {
   };
   return (
     <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-      <div className="flex items-center justify-between"><h5 className="text-sm font-bold text-ink">Draft to {q.forwarder_label}</h5><span className="text-xs text-slate-500">Not sent until you click Send</span></div>
+      <div className="flex items-center justify-between"><h5 className="text-sm font-bold text-ink">Draft to {q.forwarder_label}</h5><span className="text-xs text-slate-500">{locked ? 'Sending is off: copy it into Gmail' : 'Not sent until you click Send'}</span></div>
       {!canSend && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">Check the sizes above and press <b>Sizes checked</b> before this can be sent.</p>}
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-xs font-semibold text-slate-600">To<input className={`${smallInput} mt-1`} value={d.to_email} onChange={(e) => setD({ ...d, to_email: e.target.value })} /></label>
@@ -1161,7 +1195,15 @@ function QuoteDraft({ q, canSend, reload, setNotice }) {
       <label className="block text-xs font-semibold text-slate-600">Subject<input className={`${smallInput} mt-1`} value={d.subject} onChange={(e) => setD({ ...d, subject: e.target.value })} /></label>
       <textarea aria-label={`Email to ${q.forwarder_label}`} className="min-h-[16rem] w-full rounded-md border border-slate-300 bg-white p-2.5 text-sm" value={d.body} onChange={(e) => setD({ ...d, body: e.target.value })} />
       <div className="flex flex-wrap gap-2">
-        <button type="button" className={buttonPrimary} disabled={busy || !canSend} onClick={() => window.confirm(`Send this quote request to ${d.to_email}${d.cc_email ? ` (cc ${d.cc_email})` : ''}?`) && run(() => inbox('freight_quote_send', { id: q.id, ...d }), `Sent to ${q.forwarder_label}. Their price fills in when they reply.`)}><Send size={14} />Send</button>
+        {locked ? (
+          <>
+            <button type="button" className={buttonPrimary} disabled={busy || !canSend} onClick={async () => { const ok = await copyText(d.body); setCopied(ok ? 'body' : ''); setTimeout(() => setCopied(''), 3000); }}>{copied === 'body' ? 'Copied' : 'Copy email'}</button>
+            <button type="button" className={buttonPlain} disabled={busy} onClick={async () => { const ok = await copyText(d.subject); setCopied(ok ? 'subject' : ''); setTimeout(() => setCopied(''), 3000); }}>{copied === 'subject' ? 'Copied' : 'Copy subject'}</button>
+            <button type="button" className={buttonPlain} disabled={busy || !canSend} onClick={() => run(() => inbox('freight_quote_mark_sent', { id: q.id }), "Marked as sent. Enter the price below when they reply.")}>I've sent it</button>
+          </>
+        ) : (
+          <button type="button" className={buttonPrimary} disabled={busy || !canSend} onClick={() => window.confirm(`Send this quote request to ${d.to_email}${d.cc_email ? ` (cc ${d.cc_email})` : ''}?`) && run(() => inbox('freight_quote_send', { id: q.id, ...d }), `Sent to ${q.forwarder_label}. Their price fills in when they reply.`)}><Send size={14} />Send</button>
+        )}
         <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(() => inbox('freight_quote_save', { id: q.id, ...d }), 'Draft saved.')}>Save changes</button>
         <button type="button" className={buttonPlain} disabled={busy} onClick={() => run(() => inbox('freight_quote_discard', { id: q.id }), 'Draft discarded.')}>Discard</button>
       </div>
@@ -1335,6 +1377,94 @@ function PosView({ selectedId, onOpen, setNotice }) {
         ))}
         {shown.length === 0 && <li className="p-6 text-center text-sm text-slate-500">No purchase orders match.</li>}
       </ul>
+    </div>
+  );
+}
+
+// ------------------------------------------------------- drafts
+// Every saved draft in one place: replies to suppliers and quote requests to forwarders. Nothing here is sent by itself.
+function DraftsView({ onOpen, onFreight, setNotice, onChanged }) {
+  const locked = useContext(SendingLock);
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState('');
+  const load = useCallback(async () => {
+    try { setData(await inbox('list_drafts')); } catch (err) { setNotice(errNotice(err)); setData({ replies: [], quotes: [] }); }
+  }, [setNotice]);
+  useEffect(() => { load(); }, [load]);
+  const act = async (fn, ok) => {
+    setBusy(true);
+    setNotice(null);
+    try { await fn(); if (ok) setNotice({ type: 'success', text: ok }); await load(); onChanged(); } catch (err) { setNotice(errNotice(err)); }
+    setBusy(false);
+  };
+  const copy = async (id, text) => {
+    const ok = await copyText(text);
+    setCopied(ok ? id : '');
+    setTimeout(() => setCopied(''), 3000);
+    if (!ok) setNotice({ type: 'error', text: "Couldn't copy. Select the text and press Ctrl+C." });
+  };
+  if (!data) return <div className="p-8 text-center text-sm text-slate-500">Loading</div>;
+  const total = data.replies.length + data.quotes.length;
+
+  const Card = ({ id, title, sub, to, body, note, blocked, open, openLabel, sent, discard, subject }) => (
+    <li className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-ink">{title}</div>
+          <div className="break-words text-xs text-slate-600">{sub}</div>
+          <div className="mt-0.5 text-xs text-slate-500">To: {to}</div>
+        </div>
+        {blocked && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[0.7rem] font-semibold text-amber-800">Needs checking</span>}
+      </div>
+      {note && <p className="mt-1.5 text-xs text-violet-900">Note: {note}</p>}
+      <details className="mt-2 text-sm">
+        <summary className="cursor-pointer font-semibold text-blue-700">Read the email</summary>
+        <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-md bg-slate-50 p-2.5 font-sans text-sm text-ink">{body}</pre>
+      </details>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button type="button" className={buttonPlain} disabled={busy} onClick={open}>{openLabel}</button>
+        {locked && <button type="button" className={buttonPlain} disabled={busy || blocked} onClick={() => copy(id, body)}>{copied === id ? 'Copied' : 'Copy email'}</button>}
+        {locked && subject && <button type="button" className={buttonPlain} disabled={busy} onClick={() => copy(`${id}-s`, subject)}>{copied === `${id}-s` ? 'Copied' : 'Copy subject'}</button>}
+        {locked && <button type="button" className={buttonPlain} disabled={busy || blocked} onClick={sent}>I've sent it</button>}
+        <button type="button" className={buttonPlain} disabled={busy} onClick={() => window.confirm('Discard this draft?') && discard()}><Trash2 size={14} />Discard</button>
+      </div>
+    </li>
+  );
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div>
+        <h2 className="text-xl font-bold text-ink">Drafts</h2>
+        <p className="text-sm text-slate-600">Every email I've written for you that hasn't gone out. {locked ? "Sending is switched off for now: copy an email, send it from Gmail, then press I've sent it." : 'Nothing is sent until you open it and press Send.'}</p>
+      </div>
+      {total === 0 && <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">No drafts waiting.</p>}
+      {data.replies.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-sm font-bold uppercase tracking-wide text-slate-500">Replies ({data.replies.length})</h3>
+          <ul className="space-y-2">
+            {data.replies.map((d) => (
+              <Card key={d.id} id={d.id} title={d.who} sub={d.subject || d.thread_subject} to={d.to_email} body={d.body} note={d.note} blocked={d.needs_check}
+                openLabel="Open the email" open={() => onOpen(d.thread_id)}
+                sent={() => act(() => inbox('mark_draft_sent', { id: d.id }), 'Marked as sent. It is now waiting for their answer.')}
+                discard={() => act(() => inbox('discard_draft', { id: d.id }), 'Draft discarded.')} />
+            ))}
+          </ul>
+        </section>
+      )}
+      {data.quotes.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-sm font-bold uppercase tracking-wide text-slate-500">Freight quote requests ({data.quotes.length})</h3>
+          <ul className="space-y-2">
+            {data.quotes.map((q) => (
+              <Card key={q.id} id={q.id} title={`PO ${q.po_number || ''} to ${q.forwarder_label}`} sub={q.subject} to={q.to_email} body={q.body} subject={q.subject}
+                openLabel="Open the freight page" open={() => onFreight(q.po_number)}
+                sent={() => act(() => inbox('freight_quote_mark_sent', { id: q.id }), 'Marked as sent. Enter the price on the freight page when they reply.')}
+                discard={() => act(() => inbox('freight_quote_discard', { id: q.id }), 'Draft discarded.')} />
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }

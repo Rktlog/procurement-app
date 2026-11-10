@@ -9,6 +9,7 @@ const AVAILABLE_APPS = [
   { id: 'sales_inbox', label: 'Sales inbox (Seaga reps)' },
   { id: 'sales_inbox_view', label: 'Sales inbox, view only (2PRE managers)' },
   { id: 'preorders', label: 'Customer pre-orders (2PRE managers)' },
+  { id: 'sales_agent', label: 'Sales agent: Watch report and PO to DEAR' },
   { id: 'shipping', label: 'Shipping & Logistics' },
   { id: 'sales', label: 'Sales & Invoicing' },
   { id: 'wms', label: 'WMS (Orders & Purchasing)' },
