@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { salesMail } from '../salesinbox/api';
-import { buttonPrimary } from '../wms/api';
+import { buttonPrimary, buttonPlain } from '../wms/api';
 
 // Johnson's Monday report: what lands in sales@, what kind of job it is, and how well the agent's practice (Shadow) replies match
 // what staff really did. It only reads the log. Nothing here writes to DEAR or to a customer.
@@ -18,10 +18,11 @@ const Card = ({ n, label, hint }) => (
 );
 
 const VERDICT = {
+  running: ['Still running. There is no verdict until every email has been done.', 'border-blue-200 bg-blue-50 text-blue-900'],
   memory_helps: ['Memory helps. It is worth building.', 'border-emerald-200 bg-emerald-50 text-emerald-900'],
   no_clear_gain: ["No clear gain from memory. Don't build it yet.", 'border-slate-200 bg-slate-50 text-slate-800'],
   memory_hurts_or_risky: ['Memory made the drafts worse, or let a wrong fact in. Do not build it.', 'border-red-200 bg-red-50 text-red-800'],
-  not_enough: ['Not enough results yet. At least 30 emails that had similar examples are needed.', 'border-amber-200 bg-amber-50 text-amber-900'],
+  not_enough: ['Not enough results to say. At least 30 emails that had similar examples are needed.', 'border-amber-200 bg-amber-50 text-amber-900'],
 };
 const TYPE_LABEL = { customer_order: 'Customer orders', delivery_freight: 'Delivery and freight', enquiry: 'Quote and stock enquiries' };
 const show = (n) => (n == null ? 'n/a' : `${n}%`);
@@ -53,9 +54,13 @@ function LearningTest() {
     <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4" aria-labelledby="lt-title">
       <div>
         <h3 id="lt-title" className="text-base font-bold text-ink">Learning test</h3>
-        <p className="mt-0.5 text-sm text-slate-600">Does showing the agent how your team answered similar emails make its drafts better? It picks real customer emails that a person answered, writes the reply twice (plain, and shown three similar older replies), and marks both against what the person sent. Nothing is sent or saved as a draft.</p>
+        <p className="mt-0.5 text-sm text-slate-600">Does showing the agent how your team answered similar emails make its drafts better? It picks real customer emails that a person answered, writes the reply twice (plain, and shown three similar older replies), and marks both against what the person sent. Neither version looks up stock or prices, and the marking ignores facts the agent could not know: it judges the job done and the style. Nothing is sent or saved as a draft.</p>
       </div>
       {note && <div role={note.type === 'error' ? 'alert' : 'status'} className={`rounded-md border p-2.5 text-sm ${note.type === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>{note.text}</div>}
+
+      {finished && rep.failed > 0 && (
+        <button type="button" className={buttonPlain} disabled={busy} onClick={() => act(() => salesMail('replay_retry'), (r) => `Put ${r.requeued} email${r.requeued === 1 ? '' : 's'} back in the queue. Press Run the next batch.`)}>Try the {rep.failed} that failed again</button>
+      )}
 
       {(!has || finished) && (
         <button type="button" className={buttonPrimary} disabled={busy} onClick={() => act(() => salesMail('replay_start', { n: 60 }), (r) => `Picked ${r.total} emails to test (${Object.entries(r.selected).map(([t, n]) => `${n} ${(TYPE_LABEL[t] || t).toLowerCase()}`).join(', ')}).`)}>
@@ -66,31 +71,38 @@ function LearningTest() {
       {has && rep.pending > 0 && (
         <div className="space-y-1.5">
           <p className="text-sm text-slate-700"><b>{rep.total - rep.pending - rep.failed} of {rep.total}</b> done{rep.failed ? `, ${rep.failed} could not be tested` : ''}. A batch takes a few minutes, and you can press the button again until it reaches the end.</p>
-          <button type="button" className={buttonPrimary} disabled={busy} onClick={() => act(() => salesMail('replay_run'), (r) => `Marked ${r.done} email${r.done === 1 ? '' : 's'}${r.failed ? `, ${r.failed} failed` : ''}. ${r.remaining} still to go.`)}>
-            <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />{busy ? 'Working (this can take a few minutes)' : 'Run the next batch'}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={buttonPrimary} disabled={busy} onClick={() => act(() => salesMail('replay_run'), (r) => `Marked ${r.done} email${r.done === 1 ? '' : 's'}${r.failed ? `, ${r.failed} failed` : ''}. ${r.remaining} still to go.`)}>
+              <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />{busy ? 'Working (this can take a few minutes)' : 'Run the next batch'}
+            </button>
+            <button type="button" className={buttonPlain} disabled={busy} onClick={() => window.confirm('Stop this test? The emails not yet done are dropped, and you can start a new one.') && act(() => salesMail('replay_stop'), (r) => `Stopped. ${r.stopped} email${r.stopped === 1 ? '' : 's'} dropped.`)}>Stop this test</button>
+          </div>
         </div>
+      )}
+
+      {has && (rep.tested > 0 || rep.pending > 0) && verdict && (
+        <div className={`rounded-md border p-3 text-sm font-semibold ${verdict[1]}`}>{verdict[0]}</div>
       )}
 
       {has && rep.tested > 0 && (
         <>
-          <div className={`rounded-md border p-3 text-sm font-semibold ${verdict[1]}`}>{verdict[0]}</div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[480px] text-sm">
               <thead><tr className="text-left text-xs text-slate-500"><th className="py-1.5 pr-3 font-semibold">{rep.tested} emails with similar examples</th><th className="py-1.5 pr-3 text-right font-semibold">Plain</th><th className="py-1.5 text-right font-semibold">With memory</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
-                <tr><td className="py-1.5 pr-3">Same job, no fact differs</td><td className="py-1.5 pr-3 text-right">{show(rep.base_match)}</td><td className="py-1.5 text-right font-semibold">{show(rep.memory_match)}</td></tr>
-                <tr><td className="py-1.5 pr-3">Right job (including partly right)</td><td className="py-1.5 pr-3 text-right">{show(rep.base_ok)}</td><td className="py-1.5 text-right font-semibold">{show(rep.memory_ok)}</td></tr>
-                <tr><td className="py-1.5 pr-3">Wrong price, date, quantity or address</td><td className="py-1.5 pr-3 text-right">{rep.base_wrong}</td><td className={`py-1.5 text-right font-semibold ${rep.memory_wrong > rep.base_wrong ? 'text-red-700' : ''}`}>{rep.memory_wrong}</td></tr>
+                <tr><td className="py-1.5 pr-3">Did the same job as the person</td><td className="py-1.5 pr-3 text-right">{show(rep.base_match)}</td><td className="py-1.5 text-right font-semibold">{show(rep.memory_match)}</td></tr>
+                <tr><td className="py-1.5 pr-3">Same job, or partly</td><td className="py-1.5 pr-3 text-right">{show(rep.base_ok)}</td><td className="py-1.5 text-right font-semibold">{show(rep.memory_ok)}</td></tr>
+                <tr><td className="py-1.5 pr-3">Tone and length close to the person's</td><td className="py-1.5 pr-3 text-right">{show(rep.base_close)}</td><td className="py-1.5 text-right font-semibold">{show(rep.memory_close)}</td></tr>
+                <tr><td className="py-1.5 pr-3">Emails with a day, date or time copied from an example</td><td className="py-1.5 pr-3 text-right">{rep.base_wrong}</td><td className={`py-1.5 text-right font-semibold ${rep.memory_wrong - rep.base_wrong > 2 ? 'text-red-700' : ''}`}>{rep.memory_wrong}</td></tr>
               </tbody>
             </table>
           </div>
           {rep.by_type?.length > 0 && (
             <ul className="divide-y divide-slate-100 text-sm">
-              {rep.by_type.map((t) => <li key={t.job_type} className="flex flex-wrap justify-between gap-2 py-1.5"><span className="font-semibold text-ink">{TYPE_LABEL[t.job_type] || t.job_type}</span><span className="text-slate-600">{t.tested} tested: plain {show(t.base_match)}, with memory {show(t.memory_match)}</span></li>)}
+              {rep.by_type.map((t) => <li key={t.job_type} className="flex flex-wrap justify-between gap-2 py-1.5"><span className="font-semibold text-ink">{TYPE_LABEL[t.job_type] || t.job_type}</span><span className="text-slate-600">{t.tested} tested: same job {show(t.base_match)} plain, {show(t.memory_match)} with memory. Style close {show(t.base_close)} plain, {show(t.memory_close)} with memory</span></li>)}
             </ul>
           )}
-          <p className="text-xs text-slate-500">{rep.no_examples ? `${rep.no_examples} email${rep.no_examples === 1 ? '' : 's'} had nothing similar in the past, so were left out. ` : ''}Both versions are marked by the same AI marker, so read the examples below as well. The bar: at least 30 tested, 10 points better, and no more wrong facts.</p>
+          <p className="text-xs text-slate-500">{rep.no_examples ? `${rep.no_examples} email${rep.no_examples === 1 ? '' : 's'} had nothing similar in the past, so were left out. ` : ''}Both versions are marked by the same AI marker, so read the examples below as well. The bar: at least 30 tested, 10 points better on the job or the style with neither 5 points worse, and no more than 2 extra emails copying a fact from an example.</p>
           {rep.examples?.length > 0 && (
             <details className="text-sm">
               <summary className="cursor-pointer font-semibold text-blue-700">Read some examples side by side</summary>
