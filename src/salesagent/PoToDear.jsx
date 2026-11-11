@@ -51,7 +51,7 @@ export default function PoToDear() {
           <p className="text-sm text-slate-600">JC Gilmore purchase orders read from sales@, checked, and compared with what staff keyed. Nothing is written to DEAR.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={buttonPlain} disabled={busy} onClick={() => act(() => salesMail('po_scan', { limit: 3 }), (r) => `Found ${r.found} PO email${r.found === 1 ? '' : 's'}, read ${r.read} new.${r.errors?.length ? ` Problem: ${r.errors[0]}` : ''}`)}>Look for new POs</button>
+          <button type="button" className={buttonPlain} disabled={busy} onClick={() => act(() => salesMail('po_scan', { limit: 3 }), (r) => `Found ${r.found} PO email${r.found === 1 ? '' : 's'} in the last 90 days, read ${r.read} new.${r.unread ? ` ${r.unread} still to read: press again.` : ' That is all of them.'}${r.errors?.length ? ` Problem: ${r.errors[0]}` : ''}`)}>Look for new POs</button>
           <button type="button" className={buttonPrimary} disabled={busy || !s.read} onClick={() => act(() => salesMail('po_backtest', { limit: 5 }), (r) => `Checked ${r.done}: ${r.matched} matched what staff keyed, ${r.not_found} had no sale to compare.${r.errors?.length ? ` Problem: ${r.errors[0]}` : ''}`)}>Run the backtest</button>
         </div>
       </div>
@@ -99,7 +99,7 @@ export default function PoToDear() {
                       {(o.flags || []).length > 0 && <ul className="list-disc space-y-0.5 rounded-md border border-amber-200 bg-amber-50 py-2 pl-7 pr-3 text-sm text-amber-900">{o.flags.map((f, i) => <li key={i}>{f.text}</li>)}</ul>}
                       <div className="text-sm text-slate-700">
                         <b>Ship to:</b> {d.ship_to?.company || 'not stated'}{d.ship_to?.address ? `, ${d.ship_to.address}` : ''}{d.ship_to?.notes ? ` (${d.ship_to.notes})` : ''}<br />
-                        <b>Delivery date:</b> {day(d.delivery_date)}{d.customer_reference ? <> · <b>End customer's PO:</b> {d.customer_reference}</> : null}
+                        <b>Delivery date:</b> {d.delivery_before && d.delivery_date ? 'on or before ' : ''}{day(d.delivery_date)}{d.delivery_source ? ` (from the ${({ subject: 'email subject', email: 'email', pdf: 'PO', line: 'PO line' })[d.delivery_source] || d.delivery_source})` : ''}{d.customer_reference ? <> · <b>End customer's PO:</b> {d.customer_reference}</> : null}
                       </div>
                       <div className="overflow-x-auto">
                         <table className="w-full min-w-[640px] text-sm">
