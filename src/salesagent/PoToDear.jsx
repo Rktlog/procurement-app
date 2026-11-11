@@ -103,7 +103,7 @@ export default function PoToDear() {
                       </div>
                       <div className="overflow-x-auto">
                         <table className="w-full min-w-[640px] text-sm">
-                          <thead><tr className="text-left text-xs text-slate-500"><th className="py-1 pr-3 font-semibold">Their item</th><th className="py-1 pr-3 font-semibold">Description</th><th className="py-1 pr-3 text-right font-semibold">Qty</th><th className="py-1 pr-3 text-right font-semibold">Price</th><th className="py-1 font-semibold">Our product</th></tr></thead>
+                          <thead><tr className="text-left text-xs text-slate-500"><th className="py-1 pr-3 font-semibold">Their item</th><th className="py-1 pr-3 font-semibold">Description</th><th className="py-1 pr-3 text-right font-semibold">Qty</th><th className="py-1 pr-3 text-right font-semibold">PO price</th><th className="py-1 font-semibold">Our product</th></tr></thead>
                           <tbody className="divide-y divide-slate-200">
                             {(d.lines || []).map((l, i) => (
                               <tr key={i} className="align-top">
@@ -126,6 +126,15 @@ export default function PoToDear() {
                         <div className="rounded-md border border-slate-200 bg-white p-2.5 text-sm text-slate-700">
                           <b>Backtest:</b> {!o.backtest.found ? o.backtest.note : o.backtest.matches ? `Matches the sale staff keyed (${o.backtest.sale_number}).` : `Differs from the sale staff keyed (${o.backtest.sale_number}):`}
                           {o.backtest.found && !o.backtest.matches && <ul className="mt-1 list-disc pl-5">{(o.backtest.mismatches || []).map((m, i) => <li key={i}>{m}</li>)}</ul>}
+                          {o.backtest.found && (o.backtest.price_lines || []).length > 0 && (
+                            <p className="mt-2 text-xs text-slate-600">
+                              <b>Prices come from DEAR{o.backtest.price_tier ? ` (${o.backtest.price_tier})` : ''}, not from the PO:</b>{' '}
+                              {o.backtest.price_lines.slice(0, 8).map((pl) => `${pl.sku}: DEAR ${pl.dear_price ?? 'none'}, staff ${pl.staff_price}`).join(' · ')}
+                              {o.backtest.price_lines.length > 8 ? ` and ${o.backtest.price_lines.length - 8} more` : ''}
+                            </p>
+                          )}
+                          {o.backtest.found && <p className="mt-1 text-xs text-slate-600"><b>Ship-by date:</b> the PO {o.backtest.po_delivery_date ? `says ${day(o.backtest.po_delivery_date)}` : 'gives no date'}, and staff set {o.backtest.staff_ship_by ? day(o.backtest.staff_ship_by) : 'no date'}.</p>}
+                          {o.backtest.found && (o.backtest.po_price_differs || []).length > 0 && <p className="mt-1 text-xs text-amber-800">The PO's own price differs from DEAR for: {o.backtest.po_price_differs.slice(0, 6).join(', ')}.</p>}
                         </div>
                       )}
                       <div className="flex flex-wrap items-center gap-2 pt-1">
