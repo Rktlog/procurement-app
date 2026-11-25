@@ -68,6 +68,7 @@ export default function ShopifyFulfillment() {
 
   // --- Create Label & Book Manifest (step 3) ---
   const [processState, setProcessState] = useState({});
+  const queueLoadedRef = useRef(false);
   const [manifestBusy, setManifestBusy] = useState(false);
   const [orderReference, setOrderReference] = useState(`Order-${new Date().toISOString().slice(0, 10)}`);
   const [selectedManifestNumbers, setSelectedManifestNumbers] = useState([]);
@@ -383,9 +384,33 @@ export default function ShopifyFulfillment() {
       .eq('source', 'shopify')
       .maybeSingle();
 
-    if (!error && data?.queue_data) setCsvQueue(data.queue_data);
-    else setCsvQueue([]);
+    if (!error && data?.queue_data) {
+      setCsvQueue(data.queue_data);
+      // Bring back the shipments and labels already created, so a reload doesn't lose them.
+      const saved = {};
+      for (const e of data.queue_data) if (e.process?.shipmentId) saved[e.order_data?.orderName] = e.process;
+      if (Object.keys(saved).length) setProcessState((prev) => ({ ...saved, ...prev }));
+    } else setCsvQueue([]);
+    queueLoadedRef.current = true;
   };
+
+  // Only the parts worth keeping across a reload (not "working on it" states).
+  const durableProcess = (s) => (s && s.shipmentId
+    ? { stage: s.stage === 'label_created' ? 'label_created' : 'shipment_created', shipmentId: s.shipmentId, trackingNumber: s.trackingNumber || null, labelRequestId: s.labelRequestId || null, labelUrl: s.labelUrl || null }
+    : null);
+
+  useEffect(() => {
+    if (!queueLoadedRef.current || csvQueue.length === 0) return;
+    let changed = false;
+    const next = csvQueue.map((e) => {
+      const want = durableProcess(processState[e.order_data?.orderName]);
+      if (JSON.stringify(e.process || null) === JSON.stringify(want)) return e;
+      changed = true;
+      return { ...e, process: want };
+    });
+    if (changed) saveQueueToDb(next);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processState]);
 
   const saveQueueToDb = async (newQueue) => {
     setCsvQueue(newQueue);
@@ -939,8 +964,18 @@ export default function ShopifyFulfillment() {
   // single-item handleRemoveFromQueue (which would see a stale
   // csvQueue between calls, since React state updates aren't
   // synchronous/immediate within a loop).
+  // When an order goes back to step 1, show the quantities that were chosen for it, not the full remaining.
+  const restoreQtys = (entries) => {
+    setItemQtysMap((prev) => {
+      const next = { ...prev };
+      for (const e of entries) for (const it of e.selected_items || []) next[`${e.order_data.saleId}_${it.fo_line_item_id}`] = String(it.dispatch_qty);
+      return next;
+    });
+  };
+
   const handleRemoveMultipleFromQueue = async (orderNumbers) => {
     if (orderNumbers.length === 0) return;
+    restoreQtys(csvQueue.filter((e) => orderNumbers.includes(e.order_data.orderName)));
     const updatedQueue = csvQueue.filter((e) => !orderNumbers.includes(e.order_data.orderName));
     await saveQueueToDb(updatedQueue);
     setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to step 1.` });
@@ -1147,6 +1182,7 @@ export default function ShopifyFulfillment() {
     const itemToRemove = csvQueue[indexToRemove];
     if (!itemToRemove) return;
 
+    restoreQtys([itemToRemove]);
     const updatedQueue = csvQueue.filter((_, idx) => idx !== indexToRemove);
     await saveQueueToDb(updatedQueue);
   };
@@ -1433,14 +1469,16 @@ export default function ShopifyFulfillment() {
                       <div className="space-y-2">
                         {order.lineItems.map((item) => (
                           <div key={item.fo_line_item_id} className="flex justify-between items-center text-xs bg-slate-50 p-2 rounded border border-slate-200">
-                            <span className="font-semibold text-slate-800">{item.title}</span>
+                            <span className="font-semibold text-slate-800">
+                              {item.sku && <span className="font-mono text-slate-500 mr-2">{item.sku}</span>}{item.title}
+                            </span>
                             <div className="flex items-center gap-2">
                               <span className="text-slate-500">Remaining: {item.remaining_qty}</span>
                               <input
                                 type="number"
                                 min="0"
                                 max={item.remaining_qty}
-                                defaultValue={item.remaining_qty}
+                                defaultValue={itemQtysMap[`${saleId}_${item.fo_line_item_id}`] ?? item.remaining_qty}
                                 onChange={(e) => setItemQtysMap({ ...itemQtysMap, [`${saleId}_${item.fo_line_item_id}`]: e.target.value })}
                                 className="w-16 text-xs bg-white border border-slate-300 rounded px-2 py-1 text-right"
                               />
@@ -1600,7 +1638,20 @@ export default function ShopifyFulfillment() {
                               disabled={alreadyCreated}
                             />
                           </td>
-                          <td className="p-3 font-bold text-slate-900">{orderNumber}</td>
+                          <td className="p-3 font-bold text-slate-900 align-top">
+                            {orderNumber}
+                            <div className="mt-1 space-y-0.5 font-normal text-[0.78rem] text-slate-600 min-w-[12rem]">
+                              {(entry.selected_items || []).map((it, i) => {
+                                const total = it.remaining_qty ?? it.dispatch_qty;
+                                return (
+                                  <div key={i}>
+                                    <b className="text-slate-800">{it.dispatch_qty}</b>{total !== it.dispatch_qty ? ` of ${total}` : ''} ×{' '}
+                                    {it.sku ? <span className="font-mono">{it.sku}</span> : null}{it.sku ? ' · ' : ''}{it.title}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </td>
                           <td className="p-3 text-slate-700">{order.customer || '—'}</td>
                           <td className="p-3 text-slate-600 min-w-[14rem]">
                             <div>{[addr.address1, addr.address2].filter(Boolean).join(', ') || 'No street address'}</div>
