@@ -13,6 +13,8 @@ let activeBusinessId = null;
 let shopifyFunctionName = 'shopify-proxy';
 export const shopifyProxy = () => shopifyFunctionName;
 
+export const getActiveBusiness = () => activeBusinessId;
+
 export const setActiveBusiness = (id, shopifyFunction) => {
   activeBusinessId = id || null;
   shopifyFunctionName = shopifyFunction || 'shopify-proxy';
