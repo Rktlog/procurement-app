@@ -1418,6 +1418,14 @@ export default function ShopifyFulfillment() {
                       <div>
                         <span className="font-bold text-slate-900">{order.orderName}</span>
                         <span className="text-slate-500 ml-2">— {order.customer}</span>
+                        <div className="mt-1 text-[11px] text-slate-600">
+                          {(csvQueue.find((e) => e.order_data?.saleId === saleId)?.selected_items || []).map((it, i) => (
+                            <div key={i}>
+                              <b className="text-slate-800">{it.dispatch_qty}</b>{(it.remaining_qty ?? it.dispatch_qty) !== it.dispatch_qty ? ` of ${it.remaining_qty}` : ''} ×{' '}
+                              {it.sku ? <span className="font-mono">{it.sku} · </span> : null}{it.title}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
                     <span className="text-slate-400 italic text-[11px]">
