@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useStepParam } from './app/useStepParam';
 import StepBar from './layout/StepBar';
 import AddressEditor from './AddressEditor';
+import { getActiveBusiness } from './supabaseClient';
 import AusPostTrackingTab from './Ausposttrackingtab';
 import { supabase, shopifyProxy } from './supabaseClient';
 import { PDFDocument } from 'pdf-lib';
@@ -17,13 +18,21 @@ const SERVICE_OPTIONS = {
 
 const DIM_PRESETS = {
   '20 x 25 x 5 (Default)': { length: 20.0, width: 25.0, height: 5.0 },
+  '30 x 40 x 15 (Metro Baby smallest)': { length: 30.0, width: 40.0, height: 15.0 },
   '30 x 20 x 15': { length: 30.0, width: 20.0, height: 15.0 },
   '40 x 30 x 20': { length: 40.0, width: 30.0, height: 20.0 },
   '60 x 40 x 30': { length: 60.0, width: 40.0, height: 30.0 },
   'Custom / Manual': null,
 };
 
-const getAutoDimensionsFromWeight = (weightKg) => {
+// Metro Baby's smallest parcel is 30 x 40 x 15 cm and 1 kg, so nothing goes out smaller or lighter than that.
+const METRO_BABY = 'metrobaby';
+const METRO_MIN = { length: 30.0, width: 40.0, height: 15.0, weight: 1.0, presetName: '30 x 40 x 15 (Metro Baby smallest)' };
+
+const getAutoDimensionsFromWeight = (weightKg, businessId) => {
+  if (businessId === METRO_BABY && weightKg <= 2.0) {
+    return { length: METRO_MIN.length, width: METRO_MIN.width, height: METRO_MIN.height, presetName: METRO_MIN.presetName };
+  }
   if (weightKg < 1.0) {
     return { length: 20.0, width: 25.0, height: 5.0, presetName: '20 x 25 x 5 (Default)' };
   } else if (weightKg <= 2.0) {
@@ -589,8 +598,10 @@ export default function ShopifyFulfillment() {
     if (itemsToDispatch.length === 0) return null;
 
     const calculatedWeight = itemsToDispatch.reduce((acc, i) => acc + i.dispatch_qty * i.unit_weight_kg, 0);
-    const weight = Math.max(parseFloat(calculatedWeight).toFixed(2), 0.1);
-    const autoDims = getAutoDimensionsFromWeight(weight);
+    const businessId = getActiveBusiness();
+    const minWeight = businessId === METRO_BABY ? METRO_MIN.weight : 0.1;
+    const weight = Math.max(parseFloat(calculatedWeight).toFixed(2), minWeight);
+    const autoDims = getAutoDimensionsFromWeight(weight, businessId);
 
     // International takes priority over the domestic auto-detection --
     // detectedService only ever distinguishes Parcel Post vs Express
