@@ -981,6 +981,22 @@ export default function ShopifyFulfillment() {
     setMsg({ type: 'success', text: `${orderNumbers.length} order(s) sent back to step 1.` });
   };
 
+  // For an order whose label is already printed and manifested, so AusPost won't let it be deleted.
+  // Only takes it out of this batch. The AusPost shipment is left exactly as it is.
+  const handleForgetShipment = async (entry) => {
+    const orderNumber = entry.order_data.orderName;
+    if (!window.confirm(`Remove ${orderNumber} from this batch?\n\nThe AusPost shipment and label are NOT deleted. Only use this if the label was already printed and the order has gone out.`)) return;
+    setProcessState((prev) => {
+      const next = { ...prev };
+      delete next[orderNumber];
+      return next;
+    });
+    setSelectedForLabel((prev) => prev.filter((n) => n !== orderNumber));
+    const updatedQueue = csvQueue.filter((e) => e.order_data.orderName !== orderNumber);
+    await saveQueueToDb(updatedQueue);
+    setMsg({ type: 'success', text: `${orderNumber} removed from the batch. AusPost was not touched.` });
+  };
+
   // step 3's "Delete Shipment": deletes the real AusPost shipment
   // (removes the label with it -- AusPost has no separate "delete
   // label" call), then clears local process state, then removes the
@@ -1782,7 +1798,19 @@ export default function ShopifyFulfillment() {
                               if (s.error) return <span className="text-red-600 font-bold text-[11px]" title={s.error}>⚠️ Failed -- hover for details</span>;
                               if (s.stage === 'creating_shipment') return <span className="text-slate-400 text-[11px]">Creating shipment...</span>;
                               if (s.stage === 'creating_label') return <span className="text-slate-400 text-[11px]">Creating label...</span>;
-                              if (alreadyCreated) return <span className="text-emerald-600 font-bold text-[11px]">✅ Label created</span>;
+                              if (alreadyCreated) return (
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className="text-emerald-600 font-bold text-[11px]">✅ Label created</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleForgetShipment(entry)}
+                                    className="text-[0.72rem] font-semibold text-red-600 hover:underline cursor-pointer"
+                                    title="Takes it out of this batch only. The AusPost shipment is not touched."
+                                  >
+                                    Remove from batch only
+                                  </button>
+                                </div>
+                              );
                               return <span className="text-slate-400 text-[11px]">Not yet</span>;
                             })()}
                           </td>
